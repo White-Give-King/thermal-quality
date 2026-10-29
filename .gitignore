@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+.vscode/
+.gradio/
+.trae/
+*.log
+tmp/
+runs/
+data/
+archive/
