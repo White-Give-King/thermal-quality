@@ -1,4 +1,4 @@
-name: thermal-focus-quality
+name: thermal-quality
 channels:
   - defaults
 variables:
@@ -7,14 +7,14 @@ dependencies:
   - python=3.14
   - pip
   - pip:
-      - --extra-index-url https://download.pytorch.org/whl/cu128
-      - numpy==2.4.6
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - numpy==2.5.4
       - scikit-learn==1.9.1
       - pyyaml==6.0.3
-      - pandas==3.1.0
-      - torch==2.11.0
-      - torchvision==0.26.0
-      - opencv-python==4.14.0.94
-      - gradio==6.30.0
+      - pandas==3.1.1
+      - torch==2.14.1
+      - torchvision==0.29.1
+      - opencv-python==5.0.0.93
+      - gradio==6.31.0
       - pytest==9.2.0
-      - httpx==0.27.2
+      - httpx==0.28.1

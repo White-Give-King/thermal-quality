@@ -24,9 +24,11 @@ app_file: app.py
 
 ```powershell
 conda env create -f environment.yml
-conda activate thermal-focus-quality
+conda activate thermal-quality
 python -m pip install -e .
 ```
+
+PyTorch is configured to use the CUDA 13.0 (`cu130`) wheels. The NVIDIA driver must support CUDA 13; a separate CUDA Toolkit installation is not required for PyTorch.
 
 检查 CUDA：
 
@@ -120,7 +122,7 @@ python -m pip install -e ".[ui]"
 python app.py
 ```
 
-Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `thermal-focus-quality` Conda 环境并启动本地 Gradio 服务。如果 Gradio 已在 7860 端口运行，脚本会复用现有服务并打开浏览器，不会重复启动；若端口被其他程序占用，会显示占用进程信息。关闭运行中的服务窗口即可停止服务。
+Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `thermal-quality` Conda 环境并启动本地 Gradio 服务。如果 Gradio 已在 7860 端口运行，脚本会复用现有服务并打开浏览器，不会重复启动；若端口被其他程序占用，会显示占用进程信息。关闭运行中的服务窗口即可停止服务。
 
 打开 `http://127.0.0.1:7860`，或在局域网其他设备上打开 `http://<主机IP>:7860`：
 
