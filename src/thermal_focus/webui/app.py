@@ -12,7 +12,7 @@ from thermal_focus.webui.workspace import build_workspace_panel
 from thermal_focus.webui_service import WebUIService
 
 
-def create_ui() -> gr.Blocks:
+def create_ui(*, inference_only: bool = False) -> gr.Blocks:
     """Create the Gradio interface backed by the in-process service layer."""
     service = WebUIService()
     with gr.Blocks(
@@ -23,17 +23,20 @@ def create_ui() -> gr.Blocks:
             "本地红外图像对焦质量的标注、推理与训练工具",
             elem_classes=["app-subtitle"],
         )
-        workspace = build_workspace_panel(service)
-
-        with gr.Tabs():
-            with gr.Tab("数据集"):
-                build_dataset_tab(service, demo)
-            with gr.Tab("图片标注"):
-                build_annotation_tab(service, workspace)
-            with gr.Tab("图片推理"):
-                model_path, model_info = build_inference_tab(service)
-            with gr.Tab("模型训练"):
-                build_training_tab(service, workspace, model_path, model_info)
+        if inference_only:
+            gr.Markdown("仅推理模式：数据集、图片标注和模型训练功能已关闭。")
+            build_inference_tab(service)
+        else:
+            workspace = build_workspace_panel(service)
+            with gr.Tabs():
+                with gr.Tab("数据集"):
+                    build_dataset_tab(service, demo)
+                with gr.Tab("图片标注"):
+                    build_annotation_tab(service, workspace)
+                with gr.Tab("图片推理"):
+                    model_path, model_info = build_inference_tab(service)
+                with gr.Tab("模型训练"):
+                    build_training_tab(service, workspace, model_path, model_info)
 
     return demo
 
@@ -165,8 +168,8 @@ _HEAD_JS = """
 """
 
 
-def create_demo() -> gr.Blocks:
-    demo = create_ui()
+def create_demo(*, inference_only: bool = False) -> gr.Blocks:
+    demo = create_ui(inference_only=inference_only)
     # Keep demo.css/theme/head as non-None strings so App.create_app(demo) test path
     # can render without jinja2 undefined errors. launch() treats them the same.
     demo.css = _CSS

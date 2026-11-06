@@ -9,7 +9,7 @@ from thermal_focus.webui.annotation_tab import (
     _roi_input_updates,
     _selected_gallery_index,
 )
-from thermal_focus.webui.app import demo
+from thermal_focus.webui.app import create_demo, demo
 
 
 def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
@@ -59,6 +59,27 @@ def test_training_controls_use_recommended_defaults() -> None:
     assert components["训练设备"]["value"] == "auto"
     assert components["显式下载 torchvision 预训练权重（需要网络）"]["value"] is True
     assert "不要设为 1.0" in components["学习率"]["info"]
+
+
+def test_inference_only_ui_excludes_dataset_annotation_and_training() -> None:
+    inference_demo = create_demo(inference_only=True)
+    component_labels = {
+        item["props"].get("label")
+        for item in inference_demo.config["components"]
+    }
+    component_values = [
+        item["props"].get("value")
+        for item in inference_demo.config["components"]
+    ]
+    callback_names = {
+        item.get("api_name") for item in inference_demo.config["dependencies"]
+    }
+
+    assert "选择图片（可多选）" in component_labels
+    assert "开始推理" in component_values
+    assert not {"Epoch", "工作区根目录", "图片标注"} & component_labels
+    assert "predict_images" in callback_names
+    assert not {"train", "scan_workspaces", "begin_annotation"} & callback_names
 
 
 def test_gradio_workspace_scan_callback_updates_workspace_fields(tmp_path, monkeypatch) -> None:

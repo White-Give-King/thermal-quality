@@ -60,7 +60,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 ## A7 标注
 
-A7 本地图片位于 `数据集/A7-10-19/`。运行 `python .\app.py`（或双击 `启动WebUI.bat`）后，本机打开 `http://127.0.0.1:7860`，同一局域网内的协作者可通过标注主机的局域网 IP 访问 `http://<主机IP>:7860`。在“图片标注”页扫描 `数据集` 并选择工作区即可。WebUI 直接读主机上的原图，无需上传。把每个工作区的原图放在所选根目录的直接子文件夹中，例如：
+A7 本地图片位于 `数据集/A7-10-19/`。运行 `gradio app.py`（或双击 `启动WebUI.bat`）后，本机打开 `http://127.0.0.1:7860`，同一局域网内的协作者可通过标注主机的局域网 IP 访问 `http://<主机IP>:7860`。在“图片标注”页扫描 `数据集` 并选择工作区即可。WebUI 直接读主机上的原图，无需上传。把每个工作区的原图放在所选根目录的直接子文件夹中，例如：
 
 ```text
 数据集/
@@ -119,8 +119,10 @@ python scripts/train_classifier.py `
 
 ```powershell
 python -m pip install -e ".[ui]"
-python app.py
+gradio app.py
 ```
+
+默认启动完整界面；若只需图片推理，使用 `gradio app.py -- --inference-only`。`--` 后的参数会传给应用脚本；此模式不显示数据集、标注和训练功能。
 
 Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `thermal-quality` Conda 环境并启动本地 Gradio 服务。如果 Gradio 已在 7860 端口运行，脚本会复用现有服务并打开浏览器，不会重复启动；若端口被其他程序占用，会显示占用进程信息。关闭运行中的服务窗口即可停止服务。
 
