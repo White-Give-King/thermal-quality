@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,18 +25,23 @@ class DatasetSplits:
     test: pd.DataFrame
 
 
-def load_labels(csv_path: str | Path, *, image_root: str | Path | None = None) -> pd.DataFrame:
-    """Validate focus-quality labels, duplicate references, and image files."""
-    source = Path(csv_path).resolve()
+def load_annotations(
+    database_path: str | Path, *, image_root: str | Path | None = None
+) -> pd.DataFrame:
+    """Load and validate focus-quality annotations from a workspace SQLite database."""
+    source = Path(database_path).resolve()
     if not source.is_file():
-        raise FileNotFoundError(f"label CSV does not exist: {source}")
-    frame = pd.read_csv(source, dtype=str, keep_default_na=False)
-    missing_columns = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
-    if missing_columns:
-        raise ValueError(f"label CSV is missing required columns: {missing_columns}")
-    frame = frame.loc[:, REQUIRED_COLUMNS].copy()
+        raise FileNotFoundError(f"annotation database does not exist: {source}")
+    try:
+        with sqlite3.connect(source) as connection:
+            rows = connection.execute(
+                "SELECT image_path, label FROM image_annotations"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise ValueError(f"could not read annotations from {source}: {exc}") from exc
+    frame = pd.DataFrame(rows, columns=REQUIRED_COLUMNS, dtype=str)
     if frame.empty:
-        raise ValueError("label CSV contains no labeled rows")
+        raise ValueError("annotation database contains no labeled rows")
     for column in ("image_path", "label"):
         frame[column] = frame[column].str.strip()
     invalid = sorted(set(frame["label"]) - ALLOWED_LABELS)

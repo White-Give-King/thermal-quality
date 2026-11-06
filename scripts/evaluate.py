@@ -1,4 +1,4 @@
-"""Evaluate a trained focus-quality classifier on a labeled test CSV."""
+"""Evaluate a trained focus-quality classifier on labeled test data."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from thermal_focus.classifier import classify_panel, load_classifier
-from thermal_focus.dataset import load_labels
+from thermal_focus.dataset import load_annotations
 from thermal_focus.decision import decide_focus_quality
 from thermal_focus.evaluation import summarize
 from thermal_focus.image_io import load_image
@@ -22,7 +22,7 @@ LOGGER = logging.getLogger("thermal_focus.evaluate_focus_quality")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--labels", required=True, type=Path, help="independent test-set CSV")
+    parser.add_argument("--database", required=True, type=Path, help="SQLite annotation database")
     parser.add_argument("--image-root", type=Path)
     parser.add_argument("--model", required=True, type=Path, help="trained focus-quality classifier checkpoint")
     parser.add_argument(
@@ -39,7 +39,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
     config = load_config(args.config)
-    frame = load_labels(args.labels, image_root=args.image_root)
+    frame = load_annotations(args.database, image_root=args.image_root)
     model, metadata = load_classifier(args.model, device=args.device)
     confidence_threshold = float(
         config.get("classifier", {}).get("confidence_threshold", 0.60)
@@ -59,7 +59,7 @@ def main() -> int:
         durations_ms.append((time.perf_counter() - started) * 1000.0)
     labels = frame["label"].tolist()
     report = {
-        "dataset": str(args.labels.resolve()),
+        "dataset": str(args.database.resolve()),
         "sample_count": len(frame),
         "task": "thermal_focus_quality",
         "class_semantics": {

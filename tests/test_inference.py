@@ -32,7 +32,9 @@ class SharpPredictor(torch.nn.Module):
 def test_missing_classifier_is_uncertain_and_never_fabricates_focus_quality() -> None:
     image = np.full((64, 64, 3), 90, dtype=np.uint8)
     engine = InferenceEngine(_config())
-    result, panel, box = engine.predict_array(_image_data(image), image_name="frame.png")
+    result, panel, box = engine.predict_array(
+        _image_data(image), image_name="frame.png"
+    )
     assert result["status"] == "uncertain"
     assert result["reasons"] == ["classifier_weights_missing"]
     assert result["focus_quality"] is None
@@ -61,6 +63,18 @@ def test_classifier_decides_focus_quality_on_entire_cropped_thermal_panel() -> N
     assert result["probabilities"]["sharp"] > 0.9
     assert result["model_score"] == round(result["confidence"] * 100, 1)
     assert panel.shape == (56, 48, 3)
+
+
+def test_inference_detects_black_border_before_using_configured_roi() -> None:
+    image = np.zeros((60, 80, 3), dtype=np.uint8)
+    image[3:57, 5:75] = (20, 50, 80)
+    engine = InferenceEngine(_config(width=80, height=60))
+
+    result, panel, box = engine.predict_array(_image_data(image), image_name="frame.png")
+
+    assert box == (5, 3, 70, 54)
+    assert result["thermal_roi"]["xywh"] == [5, 3, 70, 54]
+    assert np.array_equal(panel, image[3:57, 5:75])
 
 
 def test_unexpected_canvas_size_fails_before_classification() -> None:

@@ -10,7 +10,11 @@ import yaml
 
 from .decision import STATUS_LABELS_ZH, decide_focus_quality
 from .image_io import ImageData
-from .thermal_roi import ThermalBox, extract_thermal_roi
+from .thermal_roi import (
+    ThermalBox,
+    detect_black_border_roi,
+    extract_thermal_roi,
+)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -40,8 +44,15 @@ class InferenceEngine:
     def predict_array(
         self, image_data: ImageData, *, image_name: str
     ) -> tuple[dict[str, Any], np.ndarray, ThermalBox]:
-        """Crop the configured thermal panel and classify its focus quality."""
-        thermal_image, thermal_box = extract_thermal_roi(image_data.image, self.config)
+        """Detect a dark frame or fall back to the configured panel crop."""
+        thermal_box = detect_black_border_roi(image_data.image)
+        if thermal_box is None:
+            thermal_image, thermal_box = extract_thermal_roi(
+                image_data.image, self.config
+            )
+        else:
+            x, y, width, height = thermal_box
+            thermal_image = image_data.image[y : y + height, x : x + width].copy()
         result: dict[str, Any] = {
             "image": image_name,
             "status": "uncertain",

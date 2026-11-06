@@ -1,14 +1,11 @@
 image:
   max_dimension: 12000
-  # Verified against all 2,304 local A7 images (all 1993x1080).
-  expected_width: 1993
-  expected_height: 1080
   float_range: null
 thermal_roi:
-  mode: fixed
-  # Panel bounds omit its black frame, in original-image XYWH.
-  x: 592
-  y: 0
+  # The thermal panel is centered in the frame regardless of canvas size,
+  # so the panel crop is centered with a fixed size. For A7 1993x1080 this
+  # equals the previous fixed ROI (x=592, y=0, width=809, height=1080).
+  mode: centered
   width: 809
   height: 1080
 classifier:

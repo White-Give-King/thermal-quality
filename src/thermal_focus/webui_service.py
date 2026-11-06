@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import math
@@ -10,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -21,28 +21,41 @@ import numpy as np
 
 from .annotation_storage import (
     LABELS,
+    ROI_DATABASE_FILENAME,
+    load_image_annotations,
+    load_image_rois,
+    save_image_roi,
     save_panel_label,
-    save_roi_coordinates,
     write_png,
 )
 from .classifier import (
     ARCHITECTURES,
-    DEFAULT_ARCHITECTURE,
     load_classifier,
 )
 from .decision import STATUS_LABELS_ZH
-from .image_io import collect_image_paths, decode_image_bytes, load_image_for
+from .image_io import (
+    IMAGE_SUFFIXES,
+    collect_image_paths,
+    decode_image_bytes,
+    load_image_for,
+)
 from .inference import InferenceEngine, load_config
-from .thermal_roi import ThermalBox, draw_thermal_roi, extract_thermal_roi
+from .thermal_roi import (
+    ThermalBox,
+    detect_black_border_roi,
+    draw_thermal_roi,
+    extract_thermal_roi,
+)
 from .visualization import render_annotated_image
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGGER = logging.getLogger("thermal_focus.webui")
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 PANEL_CACHE_SIZE = 9
-THUMB_MAX_WIDTH = 360
-THUMB_MAX_HEIGHT = 480
-MAX_ANNOTATION_SESSIONS = 4
+THUMB_MAX_WIDTH = 720
+THUMB_MAX_HEIGHT = 960
+MAX_ANNOTATION_SESSIONS = 64
+ANNOTATION_CLAIM_TTL_SECONDS = 30 * 60
 LOG_TAIL_CHARS = 60000
 
 
@@ -77,8 +90,10 @@ class TrainingJobs:
                 sys.executable,
                 "-u",
                 str(ROOT / "scripts" / "train_classifier.py"),
-                "--labels",
-                str(Path(options["labels"]).expanduser().resolve()),
+                "--database",
+                str(Path(options["database"]).expanduser().resolve()),
+                "--image-root",
+                str(Path(options["image_root"]).expanduser().resolve()),
                 "--output",
                 str(output),
                 "--epochs",
@@ -202,26 +217,35 @@ def _validate_workspace_name(value: Any) -> str:
 def _validate_training_options(payload: dict[str, Any]) -> dict[str, Any]:
     workspace_name = _validate_workspace_name(payload.get("workspace_name", ""))
     if workspace_name:
-        labels = ROOT / "data" / workspace_name / "labels.csv"
-        output = ROOT / "runs" / workspace_name
+        workspace_root = Path(
+            str(payload.get("workspace_root") or ROOT / "data")
+        ).expanduser().resolve()
+        workspace_dir = _find_workspace_dir(workspace_name, workspace_root)
+        if workspace_dir is None:
+            raise ValueError(f"workspace does not exist: {workspace_name}")
+        database = workspace_dir / ROI_DATABASE_FILENAME
+        image_root = _workspace_output_dir(workspace_root, workspace_dir)
+        output = image_root / "runs"
     else:
-        labels = Path(str(payload.get("labels", ""))).expanduser()
+        database = Path(str(payload.get("database", ""))).expanduser()
+        image_root = Path(str(payload.get("image_root", database.parent))).expanduser()
         output = Path(str(payload.get("output", ""))).expanduser()
-    if not labels.is_file():
-        raise ValueError(f"labels CSV does not exist: {labels}")
+    if not database.is_file():
+        raise ValueError(f"annotation database does not exist: {database}")
     if not workspace_name and not str(payload.get("output", "")).strip():
         raise ValueError("output directory is required")
-    pretrained = payload.get("pretrained", False)
+    pretrained = payload.get("pretrained", True)
     if not isinstance(pretrained, bool):
         raise ValueError("pretrained must be a boolean")
     try:
         options: dict[str, Any] = {
-            "labels": str(labels.resolve()),
+            "database": str(database.resolve()),
+            "image_root": str(image_root.resolve()),
             "output": str(output.resolve()),
             "workspace_name": workspace_name or None,
             "resume": str(payload.get("resume", "")).strip(),
-            "epochs": int(payload.get("epochs", 20)),
-            "architecture": str(payload.get("architecture", DEFAULT_ARCHITECTURE)),
+            "epochs": int(payload.get("epochs", 30)),
+            "architecture": str(payload.get("architecture", "mobilenet_v3_large")),
             "batch_size": int(payload.get("batch_size", 16)),
             "input_size": int(payload.get("input_size", 224)),
             "learning_rate": float(payload.get("learning_rate", 1e-4)),
@@ -261,31 +285,121 @@ def _source_key(path: Path) -> str:
     return str(path.resolve()).casefold()
 
 
+def _direct_image_count(directory: Path) -> int:
+    """统计文件夹直接存放的图片数（不递归子文件夹）。"""
+    try:
+        return sum(
+            1
+            for item in directory.iterdir()
+            if item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES
+        )
+    except OSError:
+        return 0
+
+
+def _workspace_image_count(directory: Path) -> int:
+    """递归统计工作区图片，避免为计数构造和排序完整路径列表。"""
+    target = directory.expanduser().resolve()
+    if not target.is_dir():
+        raise NotADirectoryError(f"image folder does not exist: {target}")
+    return sum(
+        1
+        for item in target.rglob("*")
+        if item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def _is_annotation_output(directory: Path) -> bool:
+    """标注输出目录中的裁剪图不应被再次发现为原图工作区。"""
+    return (
+        (directory / "images").is_dir()
+        and not (directory / "images_source").is_dir()
+        and not _direct_image_count(directory)
+    )
+
+
+def _workspace_candidates(child: Path) -> list[Path]:
+    if child.is_symlink() or not child.is_dir() or _is_annotation_output(child):
+        return []
+    if (child / "images_source").is_dir() or _direct_image_count(child):
+        return [child]
+    return [
+        grandchild
+        for grandchild in sorted(child.iterdir(), key=lambda path: path.name.casefold())
+        if grandchild.is_dir()
+        and not grandchild.is_symlink()
+        and not _is_annotation_output(grandchild)
+    ]
+
+
+def _find_workspace_dir(
+    workspace_name: str, root_dir: str | Path | None = None
+) -> Path | None:
+    """Locate a workspace directly under its root or one grouping folder below."""
+    data_root = Path(root_dir).expanduser().resolve() if root_dir else ROOT / "data"
+    direct = data_root / workspace_name
+    if direct.is_dir():
+        return direct
+    if not data_root.is_dir():
+        return None
+    for entry in sorted(data_root.iterdir()):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        candidate = entry / workspace_name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _workspace_output_dir(root: Path, directory: Path) -> Path:
+    """工作区位于 data/ 下时产物写入工作区文件夹本身，否则统一输出到 data/<名称>/。"""
+    data_root = (ROOT / "data").resolve()
+    resolved = directory.resolve()
+    if resolved.is_relative_to(data_root):
+        return resolved
+    return data_root / directory.name
+
+
+def _workspace_record(root: Path, directory: Path) -> dict[str, Any] | None:
+    image_dir = _workspace_image_dir(directory)
+    image_count = _workspace_image_count(image_dir)
+    if not image_count:
+        return None
+    name = directory.name
+    output_dir = _workspace_output_dir(root, directory)
+    return {
+        "name": name,
+        "root_dir": str(root),
+        "image_dir": str(image_dir.resolve()),
+        "image_count": image_count,
+        "output_dir": str(output_dir),
+        "data_dir": str(output_dir),
+        "annotation_database": str(directory / ROI_DATABASE_FILENAME),
+        "runs_dir": str(output_dir / "runs"),
+    }
+
+
 def _list_workspaces(root_dir: str | Path) -> list[dict[str, Any]]:
     root = Path(root_dir).expanduser().resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"workspace root does not exist: {root}")
-    workspaces: list[dict[str, Any]] = []
-    for child in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
-        if child.is_symlink() or not child.is_dir():
-            continue
-        image_dir = _workspace_image_dir(child)
-        images = _collect_annotation_images(image_dir)
-        if not images:
-            continue
-        name = child.name
-        workspaces.append(
-            {
-                "name": name,
-                "root_dir": str(root),
-                "image_dir": str(image_dir.resolve()),
-                "image_count": len(images),
-                "data_dir": str(ROOT / "data" / name),
-                "labels_csv": str(ROOT / "data" / name / "labels.csv"),
-                "runs_dir": str(ROOT / "runs" / name),
-            }
+    children = sorted(root.iterdir(), key=lambda path: path.name.casefold())
+    max_workers = min(8, os.cpu_count() or 4)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        candidate_groups = pool.map(
+            _workspace_candidates, children
         )
-    return workspaces
+        candidates = [
+            candidate for group in candidate_groups for candidate in group
+        ]
+        records = pool.map(
+            lambda directory: _workspace_record(root, directory), candidates
+        )
+        return sorted(
+            (record for record in records if record is not None),
+            key=lambda record: record["name"].casefold(),
+            reverse=True,
+        )
 
 
 def _read_training_metadata(run_dir: Path) -> dict[str, Any]:
@@ -300,31 +414,45 @@ def _read_training_metadata(run_dir: Path) -> dict[str, Any]:
 
 
 def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, Any]]:
-    """Scan the runs directory for best.pt checkpoints, newest first."""
-    root = Path(runs_root).expanduser().resolve() if runs_root else ROOT / "runs"
-    if not root.is_dir():
-        return []
+    """Scan runs/ and workspace folders for best.pt checkpoints, newest first."""
+    if runs_root:
+        roots = [Path(runs_root).expanduser().resolve()]
+    else:
+        # 默认同时扫描旧版 runs/ 与 data/ 下各工作区文件夹内的 runs/。
+        roots = [ROOT / "runs", ROOT / "data"]
     entries: list[tuple[float, dict[str, Any]]] = []
-    for best in root.rglob("best.pt"):
-        try:
-            stat_result = best.stat()
-        except OSError:
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
             continue
-        metadata = _read_training_metadata(best.parent)
-        entries.append(
-            (
-                stat_result.st_mtime,
-                {
-                    "path": str(best),
-                    "workspace": best.parent.name if best.parent != root else "未分组",
-                    "modified": datetime.fromtimestamp(stat_result.st_mtime).strftime(
-                        "%Y-%m-%d %H:%M"
-                    ),
-                    "architecture": str(metadata.get("architecture", "未知")),
-                    "input_size": int(metadata.get("input_size", 0)) or None,
-                },
+        for best in root.rglob("best.pt"):
+            resolved = str(best.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                stat_result = best.stat()
+            except OSError:
+                continue
+            metadata = _read_training_metadata(best.parent)
+            if best.parent.name == "runs" and best.parent != root:
+                workspace = best.parent.parent.name
+            else:
+                workspace = best.parent.name
+            entries.append(
+                (
+                    stat_result.st_mtime,
+                    {
+                        "path": str(best),
+                        "workspace": workspace,
+                        "modified": datetime.fromtimestamp(
+                            stat_result.st_mtime
+                        ).strftime("%Y-%m-%d %H:%M"),
+                        "architecture": str(metadata.get("architecture", "未知")),
+                        "input_size": int(metadata.get("input_size", 0)) or None,
+                    },
+                )
             )
-        )
     entries.sort(key=lambda item: item[0], reverse=True)
     return [entry for _, entry in entries]
 
@@ -430,7 +558,8 @@ class WebUIService:
         self._model_cache: dict[tuple[str, str], tuple[InferenceEngine, dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
         self._annotation_sessions: dict[str, dict[str, Any]] = {}
-        self._annotation_lock = threading.Lock()
+        self._annotation_lock = threading.RLock()
+        self._annotation_claims: dict[tuple[str, str], tuple[str, float]] = {}
 
     def list_workspaces(self, root_dir: str | Path) -> dict[str, Any]:
         root_text = str(root_dir).strip()
@@ -458,6 +587,77 @@ class WebUIService:
             raise ValueError("annotation session not found")
         return session
 
+    def _annotation_labels(self, session: dict[str, Any]) -> dict[str, str]:
+        labels = {
+            _source_key(Path(row["source_path"])): row["label"]
+            for row in load_image_annotations(session["roi_database_path"])
+            if row["source_path"]
+        }
+        session["labels"] = labels
+        return labels
+
+    def _annotation_claim_key(
+        self, session: dict[str, Any], index: int
+    ) -> tuple[str, str]:
+        return str(session["output_dir"].resolve()).casefold(), _source_key(
+            session["paths"][index]
+        )
+
+    def _release_annotation_claim(self, session_id: str, session: dict[str, Any]) -> None:
+        claimed_index = session.get("claimed_index")
+        if claimed_index is not None:
+            claim_key = self._annotation_claim_key(session, claimed_index)
+            claim = self._annotation_claims.get(claim_key)
+            if claim is not None and claim[0] == session_id:
+                del self._annotation_claims[claim_key]
+        session["claimed_index"] = None
+
+    def _active_annotation_claim(self, claim_key: tuple[str, str]) -> str | None:
+        claim = self._annotation_claims.get(claim_key)
+        if claim is None:
+            return None
+        session_id, expires_at = claim
+        if expires_at <= time.monotonic():
+            del self._annotation_claims[claim_key]
+            return None
+        return session_id
+
+    def _claim_annotation_index(
+        self,
+        session_id: str,
+        session: dict[str, Any],
+        index: int,
+    ) -> bool:
+        labels = session["labels"]
+        claim_key = self._annotation_claim_key(session, index)
+        owner = self._active_annotation_claim(claim_key)
+        if _source_key(session["paths"][index]) in labels or (
+            owner is not None and owner != session_id
+        ):
+            return False
+        self._annotation_claims[claim_key] = (
+            session_id,
+            time.monotonic() + ANNOTATION_CLAIM_TTL_SECONDS,
+        )
+        session["claimed_index"] = index
+        return True
+
+    def _claim_next_annotation(
+        self, session_id: str, session: dict[str, Any], start_index: int
+    ) -> int | None:
+        self._annotation_labels(session)
+        total = len(session["paths"])
+        for offset in range(total):
+            index = (start_index + offset) % total
+            if self._claim_annotation_index(session_id, session, index):
+                return index
+        return None
+
+    def annotation_image_size(self, session_id: str) -> tuple[int, int]:
+        session = self.get_annotation_session(session_id)
+        height, width = self._image_at(session, session["index"]).shape[:2]
+        return width, height
+
     def _image_at(self, session: dict[str, Any], index: int) -> np.ndarray:
         """Decode the original image; only the current image is kept in memory."""
         cached = session["full_image"]
@@ -468,6 +668,55 @@ class WebUIService:
             session["full_image"] = (index, image)
         return image
 
+    def _image_path_key(self, session: dict[str, Any], index: int) -> str:
+        return session["paths"][index].relative_to(session["image_dir"]).as_posix().casefold()
+
+    def _roi_for_image(
+        self, session: dict[str, Any], index: int
+    ) -> ThermalBox:
+        image_rois: dict[int, ThermalBox] = session["image_rois"]
+        roi = image_rois.get(index)
+        if roi is not None:
+            image = self._image_at(session, index)
+            height, width = image.shape[:2]
+            roi_width = min(roi[2], width)
+            roi_height = min(roi[3], height)
+            fitted_roi = (
+                min(roi[0], width - roi_width),
+                min(roi[1], height - roi_height),
+                roi_width,
+                roi_height,
+            )
+            image_rois[index] = fitted_roi
+            return fitted_roi
+        image = self._image_at(session, index)
+        detected_roi = detect_black_border_roi(image)
+        if detected_roi is not None:
+            roi = detected_roi
+        else:
+            config = dict(session["config"])
+            settings = dict(config["thermal_roi"])
+            settings["mode"] = "centered"
+            config["thermal_roi"] = settings
+            _, roi = extract_thermal_roi(image, config)
+        image_rois[index] = roi
+        return roi
+
+    def _image_config(
+        self, session: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        x, y, width, height = self._roi_for_image(session, index)
+        config = dict(session["config"])
+        config["thermal_roi"] = {
+            **session["config"]["thermal_roi"],
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "mode": "fixed",
+        }
+        return config
+
     def _panel_at(
         self, session: dict[str, Any], index: int
     ) -> tuple[np.ndarray, ThermalBox]:
@@ -476,7 +725,7 @@ class WebUIService:
         if cached is not None:
             return cached
         panel, box = extract_thermal_roi(
-            self._image_at(session, index), session["config"]
+            self._image_at(session, index), self._image_config(session, index)
         )
         session["panels"][index] = (panel, box)
         while len(session["panels"]) > PANEL_CACHE_SIZE:
@@ -490,13 +739,23 @@ class WebUIService:
     def render_annotation(self, session: dict[str, Any], *, original: bool) -> dict[str, Any]:
         current = session["index"]
         source = session["paths"][current]
+        with self._annotation_lock:
+            labels = self._annotation_labels(session)
+            claim_key = self._annotation_claim_key(session, current)
+            claim_owner = self._active_annotation_claim(claim_key)
+            if claim_owner == session.get("session_id"):
+                self._annotation_claims[claim_key] = (
+                    claim_owner,
+                    time.monotonic() + ANNOTATION_CLAIM_TTL_SECONDS,
+                )
+            claimed_by_other = claim_owner is not None and claim_owner != session["session_id"]
         panel, box = self._panel_at(session, current)
+        image = self._image_at(session, current)
         displayed = (
-            draw_thermal_roi(self._image_at(session, current).copy(), box)
+            draw_thermal_roi(image.copy(), box)
             if original
             else panel
         )
-        labels = session["labels"]
         preview_errors: list[str] = []
 
         def _load_thumb(index: int) -> np.ndarray | None:
@@ -542,18 +801,29 @@ class WebUIService:
             "total": len(session["paths"]),
             "filename": source.name,
             "label": labels.get(_source_key(source)),
+            "claimed_by_other": claimed_by_other,
             "labeled_count": len(labels),
             "preview": cv2.cvtColor(displayed, cv2.COLOR_BGR2RGB),
             "gallery": gallery,
             "gallery_indices": gallery_indices,
             "preview_errors": preview_errors,
             "roi": {
-                key: int(session["config"]["thermal_roi"][key])
-                for key in ("x", "y", "width", "height")
+                "x": int(box[0]),
+                "y": int(box[1]),
+                "width": int(box[2]),
+                "height": int(box[3]),
+            },
+            "image_size": {
+                "width": int(image.shape[1]),
+                "height": int(image.shape[0]),
             },
         }
 
-    def start_annotation(self, workspace_root: str | Path, workspace_name: str) -> dict[str, Any]:
+    def start_annotation(
+        self,
+        workspace_root: str | Path,
+        workspace_name: str,
+    ) -> dict[str, Any]:
         workspace_root = str(workspace_root).strip()
         workspace_name = _validate_workspace_name(workspace_name)
         if not workspace_root or not workspace_name:
@@ -563,45 +833,95 @@ class WebUIService:
         if not root_path.is_dir():
             raise NotADirectoryError(f"workspace root does not exist: {root_path}")
         workspace_candidate = root_path / workspace_name
+        if not workspace_candidate.is_dir():
+            # 分部归组结构：在根目录的一级子文件夹中查找同名工作区。
+            matches = [
+                entry
+                for entry in root_path.iterdir()
+                if entry.is_dir()
+                and not entry.is_symlink()
+                and (entry / workspace_name).is_dir()
+            ]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"workspace name is ambiguous under root: {workspace_name}"
+                )
+            if not matches:
+                raise ValueError(f"workspace does not exist: {workspace_name}")
+            workspace_candidate = matches[0] / workspace_name
         if workspace_candidate.is_symlink():
             raise ValueError("workspace folder cannot be a symbolic link")
         workspace_dir = workspace_candidate.resolve()
-        if workspace_dir.parent != root_path or not workspace_dir.is_dir():
+        if (
+            workspace_dir.parent != root_path
+            and workspace_dir.parent.parent != root_path
+        ) or not workspace_dir.is_dir():
             raise ValueError(f"workspace does not exist: {workspace_name}")
         image_dir = _workspace_image_dir(workspace_dir)
         source_paths = _collect_annotation_images(image_dir)
         if not source_paths:
             raise ValueError(f"workspace contains no images: {workspace_name}")
-        output_path = ROOT / "data" / workspace_name
+        data_root = (ROOT / "data").resolve()
+        if workspace_dir.resolve().is_relative_to(data_root):
+            # data/ 下的工作区：标注产物直接写入工作区文件夹。
+            output_path = workspace_dir
+        else:
+            output_path = ROOT / "data" / workspace_name
         output_path.mkdir(parents=True, exist_ok=True)
+        roi_database_path = workspace_dir / ROI_DATABASE_FILENAME
+        stored_rois = load_image_rois(roi_database_path)
+        resolved_image_dir = image_dir.resolve()
+        stored_rois_by_index: dict[int, ThermalBox] = {}
+        for index, path in enumerate(source_paths):
+            key = path.relative_to(resolved_image_dir).as_posix().casefold()
+            if key in stored_rois:
+                stored_rois_by_index[index] = stored_rois[key]
         session_id = uuid.uuid4().hex
         labels: dict[str, str] = {}
-        csv_path = output_path / "labels.csv"
-        if csv_path.is_file():
-            with csv_path.open("r", newline="", encoding="utf-8-sig") as stream:
-                for row in csv.DictReader(stream):
-                    if row.get("source_path") and row.get("label"):
-                        labels[_source_key(Path(row["source_path"]))] = row["label"]
         session = {
             "paths": source_paths,
+            "session_id": session_id,
             "index": 0,
             "output_dir": output_path,
             "workspace_name": workspace_name,
+            "workspace_dir": workspace_dir,
+            "image_dir": resolved_image_dir,
+            "roi_database_path": roi_database_path,
             "config": config,
             "labels": labels,
+            "claimed_index": None,
+            "image_rois": stored_rois_by_index,
             "panels": {},
             "full_image": None,
         }
         with self._annotation_lock:
             while len(self._annotation_sessions) >= MAX_ANNOTATION_SESSIONS:
-                self._annotation_sessions.pop(next(iter(self._annotation_sessions)))
+                expired_id = next(iter(self._annotation_sessions))
+                expired = self._annotation_sessions.pop(expired_id)
+                self._release_annotation_claim(expired_id, expired)
             self._annotation_sessions[session_id] = session
+            next_index = self._claim_next_annotation(session_id, session, 0)
+            if next_index is not None:
+                session["index"] = next_index
+            else:
+                next_unlabeled = next(
+                    (
+                        index
+                        for index, path in enumerate(source_paths)
+                        if _source_key(path) not in session["labels"]
+                    ),
+                    None,
+                )
+                if next_unlabeled is not None:
+                    session["index"] = next_unlabeled
         return {
             "session_id": session_id,
             "total": len(source_paths),
+            "index": session["index"],
             "workspace_name": workspace_name,
             "input_dir": str(image_dir),
             "output_dir": str(output_path),
+            "roi_database_path": str(roi_database_path),
         }
 
     def navigate(self, session_id: str, index: int) -> dict[str, Any]:
@@ -612,8 +932,27 @@ class WebUIService:
             raise ValueError("image index must be an integer") from exc
         if not 0 <= index < len(session["paths"]):
             raise ValueError("image index is out of range")
-        session["index"] = index
+        with self._annotation_lock:
+            self._release_annotation_claim(session_id, session)
+            session["index"] = index
+            self._annotation_labels(session)
+            self._claim_annotation_index(session_id, session, index)
         return self.render_annotation(session, original=False)
+
+    def claim_next_annotation(self, session_id: str) -> dict[str, Any]:
+        session = self.get_annotation_session(session_id)
+        with self._annotation_lock:
+            current = session["index"]
+            self._release_annotation_claim(session_id, session)
+            next_index = self._claim_next_annotation(
+                session_id, session, current + 1
+            )
+            if next_index is not None:
+                session["index"] = next_index
+        return {
+            "claimed": next_index is not None,
+            **self.render_annotation(session, original=False),
+        }
 
     def save_label(self, session_id: str, label: str, advance: bool = True) -> dict[str, Any]:
         session = self.get_annotation_session(session_id)
@@ -621,14 +960,61 @@ class WebUIService:
             raise ValueError(f"label must be one of {LABELS}")
         if not isinstance(advance, bool):
             raise ValueError("advance must be a boolean")
-        index = session["index"]
-        source = session["paths"][index]
-        panel, _ = self._panel_at(session, index)
-        row = save_panel_label(session["output_dir"], source, label, panel)
-        session["labels"][_source_key(source)] = label
-        if advance and index + 1 < len(session["paths"]):
-            session["index"] = index + 1
-        return {"saved": row, **self.render_annotation(session, original=False)}
+        with self._annotation_lock:
+            index = session["index"]
+            source = session["paths"][index]
+            source_key = _source_key(source)
+            labels = self._annotation_labels(session)
+            claim_key = self._annotation_claim_key(session, index)
+            claim_owner = self._active_annotation_claim(claim_key)
+
+            if source_key in labels:
+                self._release_annotation_claim(session_id, session)
+                next_index = self._claim_next_annotation(
+                    session_id, session, index + 1
+                )
+                if next_index is not None:
+                    session["index"] = next_index
+                saved = None
+                skipped = True
+            else:
+                if claim_owner not in (None, session_id):
+                    raise ValueError(
+                        "该图片已由其他网页领取，请标注其他未分配图片"
+                    )
+                if claim_owner is None and not self._claim_annotation_index(
+                    session_id, session, index
+                ):
+                        raise ValueError("该图片已标注或已分配给其他网页")
+                panel, _ = self._panel_at(session, index)
+                roi = self._roi_for_image(session, index)
+                save_image_roi(
+                    session["roi_database_path"],
+                    self._image_path_key(session, index),
+                    roi,
+                )
+                saved = save_panel_label(
+                    session["output_dir"],
+                    session["roi_database_path"],
+                    source,
+                    label,
+                    panel,
+                )
+                session["labels"][source_key] = label
+                self._release_annotation_claim(session_id, session)
+                skipped = None
+                if advance:
+                    next_index = self._claim_next_annotation(
+                        session_id, session, index + 1
+                    )
+                    if next_index is not None:
+                        session["index"] = next_index
+
+        return {
+            "saved": saved,
+            "skipped": skipped,
+            **self.render_annotation(session, original=False),
+        }
 
     def _recrop_batch(
         self,
@@ -675,30 +1061,41 @@ class WebUIService:
             raise ValueError(f"invalid ROI coordinates: {exc}") from exc
         if roi["x"] < 0 or roi["y"] < 0 or roi["width"] <= 0 or roi["height"] <= 0:
             raise ValueError("ROI coordinates must be non-negative with positive size")
+        index = session["index"]
         candidate = dict(session["config"])
         candidate["thermal_roi"] = {
             **session["config"]["thermal_roi"],
             **roi,
+            # Explicit coordinates take precedence over centered mode.
+            "mode": "fixed",
         }
-        extract_thermal_roi(self._image_at(session, session["index"]), candidate)
+        extract_thermal_roi(self._image_at(session, index), candidate)
+        roi_box = (roi["x"], roi["y"], roi["width"], roi["height"])
+        session["image_rois"][index] = roi_box
+        self._clear_image_cache(session)
         if save:
-            rows: list[dict[str, str]] = []
-            csv_path = session["output_dir"] / "labels.csv"
-            if csv_path.is_file():
-                with csv_path.open("r", newline="", encoding="utf-8-sig") as stream:
-                    rows = list(csv.DictReader(stream))
-            updated = self._recrop_batch(session, rows, candidate) if rows else []
-            save_roi_coordinates(self.config_path, tuple(roi[key] for key in ("x", "y", "width", "height")))
+            source_key = _source_key(session["paths"][index])
+            current_row = next(
+                (
+                    row
+                    for row in load_image_annotations(session["roi_database_path"])
+                    if row["source_path"]
+                    and _source_key(Path(row["source_path"])) == source_key
+                ),
+                None,
+            )
+            updated = self._recrop_batch(session, [current_row], candidate) if current_row else []
             for destination, panel in updated:
                 write_png(destination, panel)
-            session["config"] = candidate
-            self._clear_image_cache(session)
+            save_image_roi(
+                session["roi_database_path"],
+                self._image_path_key(session, index),
+                roi_box,
+            )
             return {
                 "updated_labels": len(updated),
                 **self.render_annotation(session, original=False),
             }
-        session["config"] = candidate
-        self._clear_image_cache(session)
         return self.render_annotation(session, original=False)
 
     def predict(

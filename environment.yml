@@ -1,18 +1,20 @@
 name: thermal-focus-quality
 channels:
   - defaults
+variables:
+  PYTHONNOUSERSITE: "1"
 dependencies:
-  - python=3.11
+  - python=3.14
   - pip
-  - numpy=1.26.4
-  - scikit-learn=1.5.2
-  - pyyaml=6.0.2
-  - pandas=2.2.3
   - pip:
       - --extra-index-url https://download.pytorch.org/whl/cu128
-      - torch==2.7.1
-      - torchvision==0.22.1
-      - opencv-python==4.10.0.84
+      - numpy==2.4.6
+      - scikit-learn==1.9.1
+      - pyyaml==6.0.3
+      - pandas==3.1.0
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - opencv-python==4.14.0.94
       - gradio==6.30.0
-      - pytest==8.3.4
+      - pytest==9.2.0
       - httpx==0.27.2

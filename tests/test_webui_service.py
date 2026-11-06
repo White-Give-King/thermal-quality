@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import os
 import subprocess
@@ -12,8 +11,14 @@ import cv2
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from thermal_focus import webui_service
+from thermal_focus.annotation_storage import (
+    load_image_annotations,
+    load_image_rois,
+    save_roi_coordinates,
+)
 from thermal_focus.classifier import load_classifier
 from thermal_focus.webui_service import (
     TrainingJobs,
@@ -53,8 +58,10 @@ def test_workspace_discovery_maps_same_name_data_and_run_directories(tmp_path, m
     assert workspaces[0]["name"] == "A7"
     assert workspaces[0]["image_dir"] == str(image_workspace.resolve())
     assert workspaces[0]["data_dir"] == str(project_root / "data" / "A7")
-    assert workspaces[0]["runs_dir"] == str(project_root / "runs" / "A7")
-    assert workspaces[0]["labels_csv"] == str(project_root / "data" / "A7" / "labels.csv")
+    assert workspaces[0]["runs_dir"] == str(project_root / "data" / "A7" / "runs")
+    assert workspaces[0]["annotation_database"] == str(
+        workspace_root / "A7" / "annotations.sqlite3"
+    )
 
 
 def test_workspace_listing_returns_subfolders_and_rejects_invalid_root(tmp_path) -> None:
@@ -71,12 +78,89 @@ def test_workspace_listing_returns_subfolders_and_rejects_invalid_root(tmp_path)
         service.list_workspaces(str(root / "missing"))
 
 
+def test_workspace_discovery_counts_workspaces_concurrently_and_keeps_order(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "workspaces"
+    for name in ("CameraB", "CameraA"):
+        source = root / name / "images_source"
+        (source / "nested").mkdir(parents=True)
+        (source / "frame.png").write_bytes(b"image")
+        (source / "nested" / "frame.jpg").write_bytes(b"image")
+        (source / "notes.txt").write_text("ignore", encoding="utf-8")
+
+    barrier = threading.Barrier(2)
+    original_record = webui_service._workspace_record
+
+    def synchronized_record(workspace_root, directory):
+        barrier.wait(timeout=5)
+        return original_record(workspace_root, directory)
+
+    monkeypatch.setattr(webui_service, "_workspace_record", synchronized_record)
+
+    workspaces = _list_workspaces(root)
+
+    assert [workspace["name"] for workspace in workspaces] == ["CameraB", "CameraA"]
+    assert [workspace["image_count"] for workspace in workspaces] == [2, 2]
+
+
+def test_workspace_discovery_descends_into_department_groups(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    root = tmp_path / "data"
+    task = root / "A10" / "A10-2026-01-01-00-00-00"
+    (task / "images_source").mkdir(parents=True)
+    (task / "images_source" / "frame.png").write_bytes(b"test")
+    flat = root / "Flat"
+    flat.mkdir()
+    (flat / "frame.png").write_bytes(b"test")
+    # 标注输出目录中的裁剪图不应被当作工作区。
+    output = root / "A10-2026-01-01-00-00-00"
+    output.mkdir()
+    (output / "images").mkdir()
+    (output / "images" / "crop.png").write_bytes(b"test")
+    # 同时含标注产物与原图的任务文件夹仍应被识别。
+    annotated = root / "A7" / "A7-2026-10-19-08-44-50"
+    (annotated / "images_source").mkdir(parents=True)
+    (annotated / "images_source" / "shot.jpg").write_bytes(b"test")
+    special = root / "1特殊数据集"
+    special_source_dir = special / "images_source"
+    special_source_dir.mkdir(parents=True)
+    special_source = special_source_dir / "flat-source.jpg"
+    special_source.write_bytes(b"test")
+    (special / "images").mkdir()
+    (special / "images" / "saved-crop.png").write_bytes(b"test")
+
+    workspaces = _list_workspaces(root)
+
+    assert [workspace["name"] for workspace in workspaces] == [
+        "Flat",
+        "A7-2026-10-19-08-44-50",
+        "A10-2026-01-01-00-00-00",
+        "1特殊数据集",
+    ]
+    task_workspace = next(
+        workspace
+        for workspace in workspaces
+        if workspace["name"] == "A10-2026-01-01-00-00-00"
+    )
+    assert task_workspace["image_dir"] == str((task / "images_source").resolve())
+    assert task_workspace["image_count"] == 1
+    special_workspace = workspaces[-1]
+    assert special_workspace["image_dir"] == str(special_source_dir.resolve())
+    assert special_workspace["image_count"] == 1
+
+
 def test_training_options_validate_dataset_and_parameters(tmp_path) -> None:
-    labels = tmp_path / "labels.csv"
-    labels.write_text("image_path,label\n", encoding="utf-8")
+    import sqlite3
+
+    database = tmp_path / "annotations.sqlite3"
+    with sqlite3.connect(database):
+        pass
     options = _validate_training_options(
         {
-            "labels": str(labels),
+            "database": str(database),
+            "image_root": str(tmp_path),
             "output": str(tmp_path / "run"),
             "epochs": "3",
             "batch_size": "4",
@@ -87,28 +171,34 @@ def test_training_options_validate_dataset_and_parameters(tmp_path) -> None:
         }
     )
 
-    assert options["labels"] == str(labels.resolve())
+    assert options["database"] == str(database.resolve())
+    assert options["image_root"] == str(tmp_path.resolve())
     assert options["epochs"] == 3
-    assert options["architecture"] == "mobilenet_v3_small"
+    assert options["architecture"] == "mobilenet_v3_large"
     assert options["batch_size"] == 4
+    assert options["learning_rate"] == 0.001
     assert options["device"] == "cpu"
+    assert options["pretrained"] is True
 
 
 def test_training_options_reject_invalid_parameters(tmp_path) -> None:
-    labels = tmp_path / "labels.csv"
-    labels.write_text("image_path,label\n", encoding="utf-8")
+    import sqlite3
+
+    database = tmp_path / "annotations.sqlite3"
+    with sqlite3.connect(database):
+        pass
     with pytest.raises(ValueError, match="must be positive"):
         _validate_training_options(
-            {"labels": str(labels), "output": str(tmp_path / "run"), "epochs": 0}
+            {"database": str(database), "output": str(tmp_path / "run"), "epochs": 0}
         )
     with pytest.raises(ValueError, match="device must be"):
         _validate_training_options(
-            {"labels": str(labels), "output": str(tmp_path / "run"), "device": "tpu"}
+            {"database": str(database), "output": str(tmp_path / "run"), "device": "tpu"}
         )
     with pytest.raises(ValueError, match="learning rate must be finite"):
         _validate_training_options(
             {
-                "labels": str(labels),
+                "database": str(database),
                 "output": str(tmp_path / "run"),
                 "learning_rate": "nan",
             }
@@ -116,7 +206,7 @@ def test_training_options_reject_invalid_parameters(tmp_path) -> None:
     with pytest.raises(ValueError, match="pretrained must be a boolean"):
         _validate_training_options(
             {
-                "labels": str(labels),
+                "database": str(database),
                 "output": str(tmp_path / "run"),
                 "pretrained": "false",
             }
@@ -124,7 +214,7 @@ def test_training_options_reject_invalid_parameters(tmp_path) -> None:
     with pytest.raises(ValueError, match="architecture must be one of"):
         _validate_training_options(
             {
-                "labels": str(labels),
+                "database": str(database),
                 "output": str(tmp_path / "run"),
                 "architecture": "unknown",
             }
@@ -132,16 +222,45 @@ def test_training_options_reject_invalid_parameters(tmp_path) -> None:
 
 
 def test_training_workspace_automatically_maps_data_and_runs(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
     project_root = tmp_path / "project"
     monkeypatch.setattr(webui_service, "ROOT", project_root)
-    labels = project_root / "data" / "CameraA" / "labels.csv"
-    labels.parent.mkdir(parents=True)
-    labels.write_text("image_path,label\n", encoding="utf-8")
+    workspace = project_root / "data" / "CameraA"
+    database = workspace / "annotations.sqlite3"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database):
+        pass
 
     options = _validate_training_options({"workspace_name": "CameraA"})
 
-    assert options["labels"] == str(labels.resolve())
-    assert options["output"] == str((project_root / "runs" / "CameraA").resolve())
+    assert options["database"] == str(database.resolve())
+    assert options["image_root"] == str(workspace.resolve())
+    assert options["output"] == str((workspace / "runs").resolve())
+
+
+def test_training_resolves_database_for_external_workspace_root(
+    tmp_path, monkeypatch
+) -> None:
+    import sqlite3
+
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    workspace_root = tmp_path / "source"
+    workspace = workspace_root / "CameraB"
+    workspace.mkdir(parents=True)
+    database = workspace / "annotations.sqlite3"
+    with sqlite3.connect(database):
+        pass
+
+    options = _validate_training_options(
+        {"workspace_name": "CameraB", "workspace_root": str(workspace_root)}
+    )
+
+    output_dir = project_root / "data" / "CameraB"
+    assert options["database"] == str(database.resolve())
+    assert options["image_root"] == str(output_dir.resolve())
+    assert options["output"] == str((output_dir / "runs").resolve())
 
 
 def test_training_workspace_rejects_path_traversal(tmp_path, monkeypatch) -> None:
@@ -254,8 +373,8 @@ def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch
         "  expected_height: 64\n"
         "thermal_roi:\n"
         "  mode: fixed\n"
-        "  x: 8 # keep this comment\n"
-        "  y: 4\n"
+        "  x: 2 # keep this comment\n"
+        "  y: 3\n"
         "  width: 48\n"
         "  height: 56\n"
         "classifier:\n"
@@ -267,7 +386,7 @@ def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch
     monkeypatch.setattr(webui_service, "ROOT", project_root)
     images = []
     for index in range(2):
-        image = np.full((64, 64, 3), index * 70, dtype=np.uint8)
+        image = np.full((64, 64, 3), 40 + index * 70, dtype=np.uint8)
         cv2.rectangle(image, (10, 10), (50, 52), (240, 180, 30), 2)
         success, encoded = cv2.imencode(".png", image)
         assert success
@@ -282,6 +401,7 @@ def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch
     created = service.start_annotation(str(workspace_root), "ThermalA")
     assert created["input_dir"] == str(input_dir.resolve())
     assert created["output_dir"] == str(project_root / "data" / "ThermalA")
+    assert created["roi_database_path"] == str(input_dir / "annotations.sqlite3")
     output = project_root / "data" / "ThermalA"
     session_id = created["session_id"]
     current = service.render_annotation(
@@ -296,40 +416,226 @@ def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch
     assert len(current["gallery"]) == 2
     assert len(current["gallery_indices"]) == 2
     assert current["preview_errors"] == []
+    with pytest.raises(ValueError, match="exceeds input dimensions"):
+        service.update_roi(
+            session_id, x=17, y=4, width=48, height=56, save=False
+        )
 
     saved = service.save_label(session_id, label="sharp", advance=True)
     assert saved["index"] == 1
     assert saved["label"] is None
 
-    csv_path = output / "labels.csv"
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as stream:
-        rows = list(csv.DictReader(stream))
-    assert len(rows) == 1
-    assert rows[0]["label"] == "sharp"
-    saved_crop = output / rows[0]["image_path"]
+    roi_database = input_dir / "annotations.sqlite3"
+    annotations = load_image_annotations(roi_database)
+    assert len(annotations) == 1
+    assert annotations[0]["label"] == "sharp"
+    saved_crop = output / annotations[0]["image_path"]
     assert cv2.imread(str(saved_crop)).shape[:2] == (56, 48)
+    assert load_image_rois(roi_database)["frame-1.png"] == (8, 4, 48, 56)
+    assert annotations[0]["source_path"] == str((input_dir / "frame-1.png").resolve())
 
     repeated = service.start_annotation(str(workspace_root), "ThermalA")
+    assert repeated["index"] == 1
+    service.navigate(repeated["session_id"], 0)
     updated = service.save_label(
         repeated["session_id"], label="borderline", advance=False
     )
-    assert updated["saved"]["label"] == "borderline"
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as stream:
-        rows = list(csv.DictReader(stream))
-    assert len(rows) == 1
-    assert rows[0]["label"] == "borderline"
+    assert updated["saved"] is None
+    assert updated["skipped"] is True
+    assert load_image_annotations(roi_database)[0]["label"] == "sharp"
 
     applied = service.update_roi(
         repeated["session_id"], x=10, y=5, width=40, height=50, save=False
     )
     assert applied["roi"] == {"x": 10, "y": 5, "width": 40, "height": 50}
+    assert load_image_rois(roi_database)["frame-1.png"] == (8, 4, 48, 56)
     persisted = service.update_roi(
         repeated["session_id"], x=10, y=5, width=40, height=50, save=True
     )
     assert persisted["updated_labels"] == 1
     assert cv2.imread(str(saved_crop)).shape[:2] == (50, 40)
+    independently_detected = service.navigate(repeated["session_id"], 1)
+    assert independently_detected["roi"] == {
+        "x": 8,
+        "y": 4,
+        "width": 48,
+        "height": 56,
+    }
+    saved_second_roi = service.update_roi(
+        repeated["session_id"], x=12, y=6, width=30, height=40, save=True
+    )
+    assert saved_second_roi["updated_labels"] == 0
+    assert load_image_rois(roi_database) == {
+        "frame-1.png": (10, 5, 40, 50),
+        "frame-2.png": (12, 6, 30, 40),
+    }
+    assert {
+        row["source_path"]: row["label"]
+        for row in load_image_annotations(roi_database)
+    } == {
+        str((input_dir / "frame-1.png").resolve()): "sharp",
+    }
+
+    restarted = service.start_annotation(str(workspace_root), "ThermalA")
+    assert restarted["index"] == 1
+    restarted_first = service.render_annotation(
+        service.get_annotation_session(restarted["session_id"]), original=False
+    )
+    assert restarted_first["roi"] == {"x": 12, "y": 6, "width": 30, "height": 40}
+    restarted_second = service.navigate(restarted["session_id"], 1)
+    assert restarted_second["roi"] == {
+        "x": 12,
+        "y": 6,
+        "width": 30,
+        "height": 40,
+    }
+    restarted_first = service.navigate(restarted["session_id"], 0)
+    assert restarted_first["roi"] == {
+        "x": 10,
+        "y": 5,
+        "width": 40,
+        "height": 50,
+    }
     config_text = config.read_text(encoding="utf-8")
-    assert "x: 10 # keep this comment" in config_text
+    assert "x: 2 # keep this comment" in config_text
+
+
+def test_annotation_queue_assigns_distinct_images_across_web_sessions(
+    monkeypatch, tmp_path
+) -> None:
+    config = tmp_path / "default.yaml"
+    config.write_text(
+        "image:\n  max_dimension: 12000\n"
+        "thermal_roi:\n  mode: fixed\n  x: 0\n  y: 0\n  width: 32\n  height: 32\n"
+        "classifier:\n  input_size: 32\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THERMAL_FOCUS_CONFIG", str(config))
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    workspace_root = tmp_path / "source"
+    workspace = workspace_root / "CameraA"
+    workspace.mkdir(parents=True)
+    for index in range(4):
+        assert cv2.imwrite(
+            str(workspace / f"frame-{index}.png"),
+            np.full((32, 32, 3), 40 + index * 30, dtype=np.uint8),
+        )
+
+    service = WebUIService()
+    first = service.start_annotation(str(workspace_root), "CameraA")
+    second = service.start_annotation(str(workspace_root), "CameraA")
+    assert (first["index"], second["index"]) == (0, 1)
+
+    first_saved = service.save_label(first["session_id"], "sharp")
+    assert first_saved["index"] == 2
+    service.save_label(second["session_id"], "borderline", advance=False)
+    service.save_label(first["session_id"], "defocused")
+    first_session = service.get_annotation_session(first["session_id"])
+    claim_key = service._annotation_claim_key(first_session, 3)
+    service._annotation_claims[claim_key] = (
+        first["session_id"],
+        time.monotonic() - 1,
+    )
+    third = service.start_annotation(str(workspace_root), "CameraA")
+    assert third["index"] == 3
+    service.save_label(third["session_id"], "sharp")
+
+    annotations = load_image_annotations(workspace / "annotations.sqlite3")
+    assert len(annotations) == 4
+    assert {row["label"] for row in annotations} == {
+        "sharp",
+        "borderline",
+        "defocused",
+    }
+
+
+def test_annotation_detects_each_frame_and_uses_config_fallback_when_missing(
+    monkeypatch, tmp_path
+) -> None:
+    config = tmp_path / "default.yaml"
+    config.write_text(
+        "image:\n  max_dimension: 12000\n"
+        "thermal_roi:\n  mode: fixed\n  x: 8\n  y: 4\n  width: 48\n  height: 56\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THERMAL_FOCUS_CONFIG", str(config))
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    workspace_root = tmp_path / "source"
+    workspace = workspace_root / "CameraA"
+    workspace.mkdir(parents=True)
+
+    bordered_first = np.zeros((64, 64, 3), dtype=np.uint8)
+    bordered_first[6:57, 8:56] = (40, 70, 90)
+    unbordered_second = np.full((64, 64, 3), 35, dtype=np.uint8)
+    bordered_third = np.zeros((64, 64, 3), dtype=np.uint8)
+    bordered_third[3:61, 2:62] = (30, 50, 80)
+    for index, image in enumerate(
+        (bordered_first, unbordered_second, bordered_third), start=1
+    ):
+        assert cv2.imwrite(str(workspace / f"frame-{index}.png"), image)
+
+    service = WebUIService()
+    created = service.start_annotation(str(workspace_root), "CameraA")
+    session = service.get_annotation_session(created["session_id"])
+    first = service.render_annotation(session, original=False)
+    assert first["roi"] == {"x": 8, "y": 6, "width": 48, "height": 51}
+    assert service.annotation_image_size(created["session_id"]) == (64, 64)
+
+    second = service.navigate(created["session_id"], 1)
+    assert second["roi"] == {"x": 8, "y": 4, "width": 48, "height": 56}
+    third = service.navigate(created["session_id"], 2)
+    assert third["roi"] == {"x": 2, "y": 3, "width": 60, "height": 58}
+
+
+def test_annotation_uses_config_fallback_for_each_image_orientation(
+    monkeypatch, tmp_path
+) -> None:
+    config = tmp_path / "default.yaml"
+    config.write_text(
+        "image:\n  max_dimension: 12000\n"
+        "thermal_roi:\n  mode: fixed\n  x: 8\n  y: 4\n  width: 40\n  height: 56\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THERMAL_FOCUS_CONFIG", str(config))
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    workspace_root = tmp_path / "source"
+    workspace = workspace_root / "CameraA"
+    workspace.mkdir(parents=True)
+
+    portrait = np.zeros((80, 64, 3), dtype=np.uint8)
+    portrait[8:72, 10:54] = (40, 70, 90)
+    landscape = np.full((64, 80, 3), 35, dtype=np.uint8)
+    assert cv2.imwrite(str(workspace / "frame-1.png"), portrait)
+    assert cv2.imwrite(str(workspace / "frame-2.png"), landscape)
+
+    service = WebUIService()
+    created = service.start_annotation(str(workspace_root), "CameraA")
+    first = service.render_annotation(
+        service.get_annotation_session(created["session_id"]), original=False
+    )
+    assert first["roi"] == {"x": 10, "y": 8, "width": 44, "height": 64}
+
+    second = service.navigate(created["session_id"], 1)
+    assert second["roi"] == {"x": 20, "y": 4, "width": 40, "height": 56}
+
+
+def test_save_roi_coordinates_switches_centered_config_to_fixed(tmp_path) -> None:
+    config = tmp_path / "default.yaml"
+    config.write_text(
+        "image:\n  max_dimension: 12000\n"
+        "thermal_roi:\n  mode: centered\n  width: 64\n  height: 64\n"
+        "classifier:\n  input_size: 64\n",
+        encoding="utf-8",
+    )
+
+    save_roi_coordinates(config, (10, 5, 40, 50))
+
+    roi = yaml.safe_load(config.read_text(encoding="utf-8"))["thermal_roi"]
+    assert roi["mode"] == "fixed"
+    assert (roi["x"], roi["y"], roi["width"], roi["height"]) == (10, 5, 40, 50)
 
 
 def test_web_annotation_session_creation_does_not_decode_entire_workspace(
@@ -388,10 +694,87 @@ def test_web_annotation_rejects_invalid_label_and_image_index(monkeypatch, tmp_p
         service.save_label(session_id, label="valid_target")
     with pytest.raises(ValueError, match="image index is out of range"):
         service.navigate(session_id, 5)
-    assert not (project_root / "data" / "WorkspaceA" / "labels.csv").exists()
+    assert load_image_annotations(source_dir / "annotations.sqlite3") == []
+
+
+def test_web_annotation_supports_grouped_workspace(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "default.yaml"
+    config.write_text(
+        "image:\n"
+        "  expected_width: 64\n"
+        "  expected_height: 64\n"
+        "thermal_roi:\n"
+        "  mode: fixed\n"
+        "  x: 0\n  y: 0\n  width: 64\n  height: 64\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THERMAL_FOCUS_CONFIG", str(config))
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    image = np.zeros((64, 64, 3), dtype=np.uint8)
+    root = project_root / "data"
+    task = root / "A10" / "A10-2026-01-01-00-00-00"
+    task.mkdir(parents=True)
+    assert cv2.imwrite(str(task / "frame.png"), image)
+    service = WebUIService()
+
+    created = service.start_annotation(str(root), "A10-2026-01-01-00-00-00")
+
+    assert created["total"] == 1
+    assert created["input_dir"] == str(task.resolve())
+    # data/ 下的工作区：标注产物直接写入工作区文件夹。
+    assert created["output_dir"] == str(task.resolve())
+    with pytest.raises(ValueError, match="workspace does not exist"):
+        service.start_annotation(str(root), "Missing")
+
+
+def test_training_options_resolve_grouped_workspace_paths(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    task = project_root / "data" / "A10" / "A10-2026-01-01-00-00-00"
+    task.mkdir(parents=True)
+    database = task / "annotations.sqlite3"
+    with sqlite3.connect(database):
+        pass
+
+    options = webui_service._validate_training_options(
+        {"workspace_name": "A10-2026-01-01-00-00-00"}
+    )
+
+    assert options["database"] == str(database.resolve())
+    assert options["image_root"] == str(task.resolve())
+    assert options["output"] == str((task / "runs").resolve())
+
+
+def test_list_trained_models_scans_workspace_run_dirs(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(webui_service, "ROOT", project_root)
+    task_runs = project_root / "data" / "A10" / "A10-2026-01-01-00-00-00" / "runs"
+    task_runs.mkdir(parents=True)
+    best = task_runs / "best.pt"
+    best.write_bytes(b"weights")
+    legacy_runs = project_root / "runs" / "legacy-ws"
+    legacy_runs.mkdir(parents=True)
+    legacy_best = legacy_runs / "best.pt"
+    legacy_best.write_bytes(b"weights")
+    os.utime(best, (2000000, 2000000))
+    os.utime(legacy_best, (1000000, 1000000))
+
+    models = webui_service.list_trained_models()
+
+    assert [Path(item["path"]) for item in models] == [
+        best.resolve(),
+        legacy_best.resolve(),
+    ]
+    assert models[0]["workspace"] == "A10-2026-01-01-00-00-00"
+    assert models[1]["workspace"] == "legacy-ws"
 
 
 def test_training_manager_starts_only_one_job(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
     allow_exit = threading.Event()
 
     class FakeProcess:
@@ -401,8 +784,12 @@ def test_training_manager_starts_only_one_job(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     manager = TrainingJobs()
+    database = tmp_path / "annotations.sqlite3"
+    with sqlite3.connect(database):
+        pass
     options = {
-        "labels": str(tmp_path / "labels.csv"),
+        "database": str(database),
+        "image_root": str(tmp_path),
         "output": str(tmp_path / "run"),
         "epochs": 1,
         "architecture": "resnet18",
@@ -424,9 +811,10 @@ def test_training_manager_starts_only_one_job(monkeypatch, tmp_path) -> None:
 
 
 def test_webui_runs_training_subprocess_to_checkpoint(tmp_path) -> None:
+    import sqlite3
+
     image_dir = tmp_path / "images"
     image_dir.mkdir()
-    labels_path = tmp_path / "labels.csv"
     rows = []
     for label, blur in (("sharp", 0.0), ("borderline", 1.2), ("defocused", 4.0)):
         for index in range(15):
@@ -437,17 +825,23 @@ def test_webui_runs_training_subprocess_to_checkpoint(tmp_path) -> None:
                 image = cv2.GaussianBlur(image, (kernel, kernel), blur)
             path = image_dir / f"{label}-{index}.png"
             assert cv2.imwrite(str(path), image)
-            rows.append({"image_path": str(path), "label": label})
-    with labels_path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=("image_path", "label"))
-        writer.writeheader()
-        writer.writerows(rows)
+            rows.append((str(path), label))
+    database_path = tmp_path / "annotations.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE image_annotations (image_path TEXT, label TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO image_annotations (image_path, label) VALUES (?, ?)",
+            rows,
+        )
 
     output = tmp_path / "run"
     service = WebUIService()
     job = service.start_training(
         {
-            "labels": str(labels_path),
+            "database": str(database_path),
+            "image_root": str(tmp_path),
             "output": str(output),
             "epochs": 1,
             "architecture": "resnet18",
@@ -456,6 +850,7 @@ def test_webui_runs_training_subprocess_to_checkpoint(tmp_path) -> None:
             "learning_rate": 0.0001,
             "seed": 42,
             "device": "cpu",
+            "pretrained": False,
         }
     )
     job_id = job["job_id"]

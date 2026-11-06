@@ -7,6 +7,7 @@ import json
 import logging
 import platform
 import random
+import sqlite3
 import sys
 from collections import Counter
 from pathlib import Path
@@ -27,7 +28,7 @@ from thermal_focus.classifier import (
     build_classifier,
     preprocess_panel,
 )
-from thermal_focus.dataset import load_labels, split_dataset
+from thermal_focus.dataset import load_annotations, split_dataset
 from thermal_focus.image_io import load_image
 
 LOGGER = logging.getLogger("thermal_focus.train_focus_quality")
@@ -50,25 +51,50 @@ class ThermalPanelDataset(Dataset):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--labels", required=True, type=Path)
+    parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--image-root", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--resume", type=Path, help="local checkpoint to continue training from")
     parser.add_argument(
         "--architecture",
         choices=ARCHITECTURES,
-        default=DEFAULT_ARCHITECTURE,
-        help="classifier backbone (default: mobilenet_v3_small)",
+        default="mobilenet_v3_large",
+        help="classifier backbone (default: mobilenet_v3_large)",
     )
-    parser.add_argument("--pretrained", action="store_true", help="explicitly download torchvision weights")
+    parser.add_argument(
+        "--pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="download torchvision weights (default; use --no-pretrained to disable)",
+    )
     parser.add_argument("--input-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--workers", type=int, default=0)
     return parser.parse_args()
+
+
+def _write_annotation_database(path: Path, frame: pd.DataFrame) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("BEGIN")
+        connection.execute("DROP TABLE IF EXISTS image_annotations")
+        connection.execute(
+            """
+            CREATE TABLE image_annotations (
+                image_path TEXT PRIMARY KEY,
+                label TEXT NOT NULL CHECK (label IN ('sharp', 'borderline', 'defocused')),
+                source_path TEXT NOT NULL DEFAULT '',
+                annotated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO image_annotations (image_path, label) VALUES (?, ?)",
+            frame[["image_path", "label"]].itertuples(index=False, name=None),
+        )
 
 
 def evaluate_loss(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device) -> float:
@@ -99,7 +125,7 @@ def main() -> int:
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    frame = load_labels(args.labels, image_root=args.image_root)
+    frame = load_annotations(args.database, image_root=args.image_root)
     try:
         splits = split_dataset(frame, seed=args.seed)
     except ValueError as exc:
@@ -109,7 +135,7 @@ def main() -> int:
         ) from exc
     args.output.mkdir(parents=True, exist_ok=True)
     for name, split in (("train", splits.train), ("validation", splits.validation), ("test", splits.test)):
-        split.to_csv(args.output / f"{name}_split.csv", index=False)
+        _write_annotation_database(args.output / f"{name}_split.sqlite3", split)
         LOGGER.info("%s rows=%d labels=%s", name, len(split), split.label.value_counts().to_dict())
 
     train_dataset = ThermalPanelDataset(splits.train, args.input_size)

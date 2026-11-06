@@ -1,4 +1,4 @@
-"""Classify whether input thermal images contain a valid target."""
+"""Assess focus quality in pseudo-color thermal images from the command line."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).parent / "configs" / "default.yaml",
+        default=Path(__file__).resolve().parent.parent / "configs" / "default.yaml",
     )
     parser.add_argument(
         "--model",

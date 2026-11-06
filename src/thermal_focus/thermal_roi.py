@@ -36,10 +36,13 @@ def _coordinate(settings: Mapping[str, Any], name: str) -> int:
 def validate_thermal_roi(
     image_shape: Sequence[int], config: Mapping[str, Any]
 ) -> ThermalBox:
-    """Validate fixed input dimensions and return the half-open XYWH crop.
+    """Validate the configured ROI and return the half-open XYWH crop.
 
-    Coordinates use the original image's top-left origin. The returned box is
-    ``(x, y, width, height)`` and denotes ``[x, x+width) x [y, y+height)``.
+    ``mode: fixed`` uses explicit ``x``/``y``; ``mode: centered`` centers a
+    fixed-size crop in the image, which keeps the panel crop aligned for
+    mixed image sizes. Coordinates use the original image's top-left origin.
+    The returned box is ``(x, y, width, height)`` and denotes
+    ``[x, x+width) x [y, y+height)``.
     """
     if len(image_shape) not in (2, 3):
         raise ValueError("image_shape must be (height, width) or (height, width, channels)")
@@ -69,17 +72,69 @@ def validate_thermal_roi(
 
     settings = _thermal_settings(config)
     mode = settings.get("mode", "fixed")
-    if mode != "fixed":
-        raise ValueError(f"unsupported thermal_roi.mode {mode!r}; only fixed mode is implemented")
-    x = _coordinate(settings, "x")
-    y = _coordinate(settings, "y")
+    if mode not in {"fixed", "centered"}:
+        raise ValueError(
+            f"unsupported thermal_roi.mode {mode!r}; supported modes are fixed and centered"
+        )
     roi_width = _positive_integer(settings, "width")
     roi_height = _positive_integer(settings, "height")
+    if mode == "fixed":
+        x = _coordinate(settings, "x")
+        y = _coordinate(settings, "y")
+    else:
+        if roi_width > width or roi_height > height:
+            raise ValueError(
+                f"centered thermal ROI {roi_width}x{roi_height} does not fit "
+                f"input dimensions {width}x{height}"
+            )
+        x = (width - roi_width) // 2
+        y = (height - roi_height) // 2
     if x + roi_width > width or y + roi_height > height:
         raise ValueError(
             f"thermal ROI [{x}, {x + roi_width}) x [{y}, {y + roi_height}) "
             f"exceeds input dimensions {width}x{height}"
         )
+    return (x, y, roi_width, roi_height)
+
+
+def detect_black_border_roi(
+    image: NDArray[np.generic], *, black_threshold: int = 16
+) -> ThermalBox | None:
+    """Detect a panel-sized contiguous non-black region inside a dark frame."""
+    if not isinstance(image, np.ndarray) or image.size == 0:
+        raise ValueError("image is empty or is not a NumPy array")
+    if image.ndim not in (2, 3) or (image.ndim == 3 and image.shape[2] not in (1, 3, 4)):
+        raise ValueError("image must be gray, BGR, or BGRA")
+    if not np.issubdtype(image.dtype, np.number) or not np.isfinite(image).all():
+        raise ValueError("image must contain finite numeric pixels")
+    if (
+        isinstance(black_threshold, bool)
+        or not isinstance(black_threshold, (int, np.integer))
+        or not 0 <= black_threshold <= 255
+    ):
+        raise ValueError("black_threshold must be an integer between 0 and 255")
+
+    intensity = image if image.ndim == 2 else np.max(image, axis=2)
+    non_black = (intensity > black_threshold).astype(np.uint8)
+    image_height, image_width = non_black.shape
+    component_count, _, stats, _ = cv2.connectedComponentsWithStats(
+        non_black, connectivity=8
+    )
+    if component_count <= 1:
+        return None
+
+    largest_component = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, roi_width, roi_height, component_area = (
+        int(value) for value in stats[largest_component]
+    )
+    if (
+        roi_width < max(2, int(np.ceil(image_width * 0.2)))
+        or roi_height < max(2, int(np.ceil(image_height * 0.2)))
+        or component_area < image_width * image_height * 0.1
+    ):
+        return None
+    if x == 0 and y == 0 and roi_width == image_width and roi_height == image_height:
+        return None
     return (x, y, roi_width, roi_height)
 
 
@@ -115,4 +170,3 @@ def draw_thermal_roi(
     output = image.copy()
     cv2.rectangle(output, (int(x), int(y)), (int(x + width - 1), int(y + height - 1)), color, thickness)
     return output
-

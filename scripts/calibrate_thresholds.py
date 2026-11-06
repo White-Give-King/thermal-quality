@@ -1,4 +1,4 @@
-"""Select a confidence threshold from a labeled validation CSV."""
+"""Select a confidence threshold from a labeled validation database."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from thermal_focus.classifier import classify_panel, load_classifier
-from thermal_focus.dataset import load_labels
+from thermal_focus.dataset import load_annotations
 from thermal_focus.decision import decide_focus_quality
 from thermal_focus.evaluation import summarize
 from thermal_focus.image_io import load_image
@@ -65,7 +65,7 @@ def calibrate_predictions(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--labels", required=True, type=Path, help="labeled validation-set CSV only")
+    parser.add_argument("--database", required=True, type=Path, help="SQLite annotation database")
     parser.add_argument("--image-root", type=Path)
     parser.add_argument("--model", required=True, type=Path, help="trained focus-quality checkpoint")
     parser.add_argument(
@@ -82,7 +82,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
     config = load_config(args.config)
-    frame = load_labels(args.labels, image_root=args.image_root)
+    frame = load_annotations(args.database, image_root=args.image_root)
     model, metadata = load_classifier(args.model, device=args.device)
     predictions = [
         classify_panel(
@@ -97,7 +97,7 @@ def main() -> int:
         config.get("classifier", {}).get("confidence_threshold", 0.60)
     )
     report = {
-        "dataset": str(args.labels.resolve()),
+        "dataset": str(args.database.resolve()),
         "sample_count": len(frame),
         "task": "thermal_focus_quality",
         "model_version": metadata["model_version"],

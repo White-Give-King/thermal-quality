@@ -6,6 +6,7 @@ import pytest
 
 from thermal_focus.image_io import load_image
 from thermal_focus.thermal_roi import (
+    detect_black_border_roi,
     draw_thermal_roi,
     extract_thermal_roi,
     validate_thermal_roi,
@@ -54,7 +55,7 @@ def test_extract_thermal_roi_uses_half_open_xywh_and_copies_source() -> None:
         (_config(), (30, 41, 3), "expected_width"),
         (_config(x=-1), (30, 40, 3), "non-negative integer"),
         (_config(width=0), (30, 40, 3), "positive integer"),
-        ({"thermal_roi": {"mode": "auto"}}, (30, 40, 3), "only fixed mode"),
+        ({"thermal_roi": {"mode": "auto"}}, (30, 40, 3), "supported modes are fixed and centered"),
     ],
 )
 def test_invalid_size_or_roi_fails_with_clear_error(
@@ -62,6 +63,74 @@ def test_invalid_size_or_roi_fails_with_clear_error(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_thermal_roi(shape, config)
+
+
+def test_centered_mode_centers_crop_and_ignores_xy() -> None:
+    image = np.arange(30 * 40 * 3, dtype=np.uint8).reshape(30, 40, 3)
+    config = {
+        "thermal_roi": {
+            "mode": "centered",
+            "x": 0,
+            "y": 0,
+            "width": 20,
+            "height": 12,
+        }
+    }
+    crop, box = extract_thermal_roi(image, config)
+
+    assert box == (10, 9, 20, 12)
+    assert crop.shape == (12, 20, 3)
+    assert np.array_equal(crop, image[9:21, 10:30])
+
+
+@pytest.mark.parametrize("shape", [(30, 41, 3), (31, 40, 3)])
+def test_centered_mode_rejects_canvas_smaller_than_crop(shape: tuple[int, ...]) -> None:
+    config = {"thermal_roi": {"mode": "centered", "width": 50, "height": 12}}
+    with pytest.raises(ValueError, match="does not fit"):
+        validate_thermal_roi(shape, config)
+
+
+def test_detect_black_border_roi_returns_non_black_content_bounds() -> None:
+    image = np.zeros((40, 60, 3), dtype=np.uint8)
+    image[5:35, 8:52] = (20, 50, 80)
+
+    assert detect_black_border_roi(image) == (8, 5, 44, 30)
+
+
+def test_detect_black_border_roi_ignores_disconnected_content_in_landscape_image() -> None:
+    image = np.zeros((240, 640, 3), dtype=np.uint8)
+    image[10:230, 110:410] = (20, 80, 150)
+    image[15:25, 480:620] = 255
+
+    assert detect_black_border_roi(image) == (110, 10, 300, 220)
+
+
+def test_detect_black_border_roi_ignores_small_bright_marks() -> None:
+    image = np.zeros((100, 160, 3), dtype=np.uint8)
+    image[2:5, 2:6] = 255
+
+    assert detect_black_border_roi(image) is None
+
+
+@pytest.mark.parametrize("size", [30, 40])
+def test_detect_black_border_roi_rejects_small_isolated_region(size: int) -> None:
+    image = np.zeros((200, 200, 3), dtype=np.uint8)
+    image[20 : 20 + size, 25 : 25 + size] = 255
+
+    assert detect_black_border_roi(image) is None
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        np.full((40, 60, 3), 80, dtype=np.uint8),
+        np.zeros((40, 60, 3), dtype=np.uint8),
+    ],
+)
+def test_detect_black_border_roi_returns_none_without_clear_frame(
+    image: np.ndarray,
+) -> None:
+    assert detect_black_border_roi(image) is None
 
 
 def test_empty_and_invalid_images_are_rejected() -> None:
