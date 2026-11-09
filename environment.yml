@@ -7,14 +7,15 @@ dependencies:
   - python=3.14
   - pip
   - pip:
-      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - --extra-index-url https://download.pytorch.org/whl/cu134
       - numpy==2.5.4
       - scikit-learn==1.9.1
       - pyyaml==6.0.3
       - pandas==3.1.1
-      - torch==2.14.1
-      - torchvision==0.29.1
+      - torch==2.15.0+cu134
+      - torchvision==0.29.2+cu134
       - opencv-python==5.0.0.93
       - gradio==6.31.0
       - pytest==9.2.0
       - httpx==0.28.1
+      - fastapi==0.162.0
