@@ -122,7 +122,7 @@ python -m pip install -e ".[ui]"
 gradio app.py
 ```
 
-默认启动完整界面；若只需图片推理，使用 `gradio app.py -- --inference-only`。`--` 后的参数会传给应用脚本；此模式不显示数据集、标注和训练功能。
+默认启动完整界面，端口为 `7860`。自定义端口时可使用 `gradio app.py -- --port 8080`（或 `python app.py --port 8080`）；若只需图片推理，可组合参数：`gradio app.py -- --inference-only --port 8080`。`--` 后的参数会传给应用脚本；推理模式不显示数据集、标注和训练功能。
 
 Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `thermal-quality` Conda 环境并启动本地 Gradio 服务。如果 Gradio 已在 7860 端口运行，脚本会复用现有服务并打开浏览器，不会重复启动；若端口被其他程序占用，会显示占用进程信息。关闭运行中的服务窗口即可停止服务。
 

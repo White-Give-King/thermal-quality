@@ -13,6 +13,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start only the image inference interface",
     )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=7860,
+        help="port for the Gradio server (default: 7860)",
+    )
     return parser
 
 
@@ -22,7 +28,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     demo = create_demo(inference_only=args.inference_only)
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=args.port,
         show_error=True,
         css=demo.css,
         head=demo.head,

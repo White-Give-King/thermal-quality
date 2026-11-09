@@ -47,6 +47,22 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     }
 
 
+def test_main_accepts_custom_port(monkeypatch) -> None:
+    class FakeDemo:
+        css = "test-css"
+        head = "test-head"
+
+        def launch(self, **kwargs) -> None:
+            self.launch_kwargs = kwargs
+
+    launched_demo = FakeDemo()
+    monkeypatch.setattr(app_entrypoint, "create_demo", lambda **_: launched_demo)
+
+    app_entrypoint.main(["--port", "8080"])
+
+    assert launched_demo.launch_kwargs["server_port"] == 8080
+
+
 def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
     client = TestClient(App.create_app(demo))
 
