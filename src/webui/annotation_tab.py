@@ -6,8 +6,8 @@ from typing import Any
 
 import gradio as gr
 
-from thermal_focus.webui.workspace import WorkspacePanel
-from thermal_focus.webui_service import WebUIService
+from webui.workspace import WorkspacePanel
+from webui_service import WebUIService
 
 # 未选择工作区时标注视图组件的占位输出。
 _no_session_annotation = ([], "请先在上方选择工作区。", 1, 0, 0, 1, 1, [])

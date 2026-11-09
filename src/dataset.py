@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
 
-from .decision import LABELS
+from decision import LABELS
 
 REQUIRED_COLUMNS = (
     "image_path",

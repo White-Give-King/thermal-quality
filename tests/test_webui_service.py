@@ -13,14 +13,14 @@ import pytest
 import torch
 import yaml
 
-from thermal_focus import webui_service
-from thermal_focus.annotation_storage import (
+import webui_service
+from annotation_storage import (
     load_image_annotations,
     load_image_rois,
     save_roi_coordinates,
 )
-from thermal_focus.classifier import load_classifier
-from thermal_focus.webui_service import (
+from classifier import load_classifier
+from webui_service import (
     TrainingJobs,
     WebUIService,
     _collect_annotation_images,

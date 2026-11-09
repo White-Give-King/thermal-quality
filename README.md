@@ -46,7 +46,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 ├── data/          # 任务工作区（含标注数据库、裁剪图和各工作区的 runs/ 模型输出）
 ├── runs/          # 旧版模型输出目录，仍会被模型列表扫描
 ├── scripts/       # 推理、训练、评估、阈值校准和数据下载工具
-├── src/           # 可复用的识别、数据处理与 WebUI 界面代码
+├── src/           # Python 源码模块直接位于此处，WebUI 界面代码在 webui/ 子目录
 ├── tests/         # 自动化测试
 ├── 数据集/        # 原始图片与设备元数据
 └── archive/       # 已封存的旧标注和历史训练产物
@@ -83,7 +83,7 @@ A7 本地图片位于 `数据集/A7-10-19/`。运行 `gradio app.py`（或双击
 标注数据库中的 `image_annotations` 表包含裁剪图相对路径、类别标签、原图路径和标注时间。查看类别分布：
 
 ```powershell
-python -c "from thermal_focus.dataset import load_annotations; f=load_annotations(r'.\数据集\A7-10-19\annotations.sqlite3', image_root=r'.\data\A7-10-19'); print('samples=',len(f),'classes=',f.label.value_counts().to_dict())"
+python -c "from dataset import load_annotations; f=load_annotations(r'.\数据集\A7-10-19\annotations.sqlite3', image_root=r'.\data\A7-10-19'); print('samples=',len(f),'classes=',f.label.value_counts().to_dict())"
 ```
 
 标注建议：覆盖不同设备、背景、距离、角度、目标大小和色标设置；特别收集正常对焦、明显失焦和两者之间的临界样本。用相机的对焦成功标志作参考记录即可，不能直接代替图像清晰度标签。没有代表性类别样本时不要训练或声称性能可靠。

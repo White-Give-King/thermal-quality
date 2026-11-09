@@ -6,9 +6,9 @@ import time
 
 import gradio as gr
 
-from thermal_focus.webui.inference_tab import describe_model, model_choices
-from thermal_focus.webui.workspace import WorkspacePanel
-from thermal_focus.webui_service import WebUIService
+from webui.inference_tab import describe_model, model_choices
+from webui.workspace import WorkspacePanel
+from webui_service import WebUIService
 
 
 def build_training_tab(

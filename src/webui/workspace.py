@@ -7,7 +7,7 @@ from typing import Any
 
 import gradio as gr
 
-from thermal_focus.webui_service import ROOT, WebUIService
+from webui_service import ROOT, WebUIService
 
 
 @dataclass

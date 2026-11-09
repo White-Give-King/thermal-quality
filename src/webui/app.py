@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import gradio as gr
 
-from thermal_focus.webui.annotation_tab import build_annotation_tab
-from thermal_focus.webui.dataset_tab import build_dataset_tab
-from thermal_focus.webui.inference_tab import build_inference_tab
-from thermal_focus.webui.training_tab import build_training_tab
-from thermal_focus.webui.workspace import build_workspace_panel
-from thermal_focus.webui_service import WebUIService
+from webui.annotation_tab import build_annotation_tab
+from webui.dataset_tab import build_dataset_tab
+from webui.inference_tab import build_inference_tab
+from webui.training_tab import build_training_tab
+from webui.workspace import build_workspace_panel
+from webui_service import WebUIService
 
 
 def create_ui(*, inference_only: bool = False) -> gr.Blocks:

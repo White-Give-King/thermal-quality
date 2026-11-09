@@ -10,14 +10,14 @@ from pathlib import Path
 
 import numpy as np
 
-from thermal_focus.classifier import classify_panel, load_classifier
-from thermal_focus.dataset import load_annotations
-from thermal_focus.decision import decide_focus_quality
-from thermal_focus.evaluation import summarize
-from thermal_focus.image_io import load_image
-from thermal_focus.inference import load_config
+from classifier import classify_panel, load_classifier
+from dataset import load_annotations
+from decision import decide_focus_quality
+from evaluation import summarize
+from image_io import load_image
+from inference import load_config
 
-LOGGER = logging.getLogger("thermal_focus.evaluate_focus_quality")
+LOGGER = logging.getLogger("thermal_focus_quality.evaluate_focus_quality")
 
 
 def parse_args() -> argparse.Namespace:

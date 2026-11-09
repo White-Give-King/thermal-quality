@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from thermal_focus.visualization import write_visualizations
+from visualization import write_visualizations
 
 
 def test_visualization_writes_unicode_safe_classifier_outputs(tmp_path) -> None:

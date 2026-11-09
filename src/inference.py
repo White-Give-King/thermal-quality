@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import yaml
 
-from .decision import STATUS_LABELS_ZH, decide_focus_quality
-from .image_io import ImageData
-from .thermal_roi import (
+from decision import STATUS_LABELS_ZH, decide_focus_quality
+from image_io import ImageData
+from thermal_roi import (
     ThermalBox,
     detect_black_border_roi,
     extract_thermal_roi,
@@ -82,7 +82,7 @@ class InferenceEngine:
             result["error"] = "trained focus-quality classifier weights are required"
             return result, thermal_image, thermal_box
 
-        from .classifier import classify_panel
+        from classifier import classify_panel
 
         model_output = classify_panel(
             self.classifier,

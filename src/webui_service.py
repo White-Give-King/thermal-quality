@@ -19,7 +19,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .annotation_storage import (
+from annotation_storage import (
     LABELS,
     ROI_DATABASE_FILENAME,
     load_image_annotations,
@@ -28,28 +28,28 @@ from .annotation_storage import (
     save_panel_label,
     write_png,
 )
-from .classifier import (
+from classifier import (
     ARCHITECTURES,
     load_classifier,
 )
-from .decision import STATUS_LABELS_ZH
-from .image_io import (
+from decision import STATUS_LABELS_ZH
+from image_io import (
     IMAGE_SUFFIXES,
     collect_image_paths,
     decode_image_bytes,
     load_image_for,
 )
-from .inference import InferenceEngine, load_config
-from .thermal_roi import (
+from inference import InferenceEngine, load_config
+from thermal_roi import (
     ThermalBox,
     detect_black_border_roi,
     draw_thermal_roi,
     extract_thermal_roi,
 )
-from .visualization import render_annotated_image
+from visualization import render_annotated_image
 
-ROOT = Path(__file__).resolve().parents[2]
-LOGGER = logging.getLogger("thermal_focus.webui")
+ROOT = Path(__file__).resolve().parents[1]
+LOGGER = logging.getLogger("thermal_focus_quality.webui")
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 PANEL_CACHE_SIZE = 9
 THUMB_MAX_WIDTH = 720

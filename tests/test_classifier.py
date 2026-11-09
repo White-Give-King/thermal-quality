@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from thermal_focus.classifier import (
+from classifier import (
     ARCHITECTURES,
     CLASSES,
     MODEL_VERSION,
@@ -11,7 +11,7 @@ from thermal_focus.classifier import (
     load_classifier,
     preprocess_panel,
 )
-from thermal_focus.image_io import normalize_image
+from image_io import normalize_image
 
 
 def test_panel_preprocessing_checkpoint_restore_and_probabilities(tmp_path) -> None:

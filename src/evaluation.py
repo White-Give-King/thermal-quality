@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
-from thermal_focus.classifier import CLASSES
+from classifier import CLASSES
 
 
 def summarize(y_true: list[str], y_pred: list[str]) -> dict[str, object]:

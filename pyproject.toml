@@ -20,8 +20,23 @@ models = ["torch==2.14.1", "torchvision==0.29.1"]
 ui = ["gradio==6.31.0"]
 test = ["pytest==9.2.0", "httpx==0.28.1"]
 
+[tool.setuptools]
+py-modules = [
+  "annotation_storage",
+  "classifier",
+  "dataset",
+  "decision",
+  "evaluation",
+  "image_io",
+  "inference",
+  "thermal_roi",
+  "visualization",
+  "webui_service",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["webui*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

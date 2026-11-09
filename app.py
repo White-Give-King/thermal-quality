@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Sequence
 
-from thermal_focus.webui.app import create_demo
+from webui.app import create_demo
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    global demo
     args = build_parser().parse_args(argv)
     demo = create_demo(inference_only=args.inference_only)
     demo.launch(

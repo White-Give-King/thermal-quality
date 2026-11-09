@@ -20,7 +20,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from thermal_focus.classifier import (
+from classifier import (
     ARCHITECTURE_MODEL_VERSIONS,
     ARCHITECTURES,
     CLASSES,
@@ -28,10 +28,10 @@ from thermal_focus.classifier import (
     build_classifier,
     preprocess_panel,
 )
-from thermal_focus.dataset import load_annotations, split_dataset
-from thermal_focus.image_io import load_image
+from dataset import load_annotations, split_dataset
+from image_io import load_image
 
-LOGGER = logging.getLogger("thermal_focus.train_focus_quality")
+LOGGER = logging.getLogger("thermal_focus_quality.train_focus_quality")
 
 
 class ThermalPanelDataset(Dataset):

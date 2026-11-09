@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from thermal_focus.image_io import ImageData
-from thermal_focus.inference import InferenceEngine
+from image_io import ImageData
+from inference import InferenceEngine
 
 
 def _config(width: int = 64, height: int = 64) -> dict[str, object]:

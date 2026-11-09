@@ -8,11 +8,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from thermal_focus.image_io import collect_image_paths, load_image_for
-from thermal_focus.inference import InferenceEngine, load_config
-from thermal_focus.visualization import write_error_json, write_visualizations
+from image_io import collect_image_paths, load_image_for
+from inference import InferenceEngine, load_config
+from visualization import write_error_json, write_visualizations
 
-LOGGER = logging.getLogger("thermal_focus.predict")
+LOGGER = logging.getLogger("thermal_focus_quality.predict")
 
 
 def _inputs(path: Path) -> list[Path]:
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else "cpu" if args.device == "auto"
             else args.device
         )
-        from thermal_focus.classifier import load_classifier
+        from classifier import load_classifier
 
         classifier, metadata = load_classifier(checkpoint, device=device)
         engine = InferenceEngine(

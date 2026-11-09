@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from thermal_focus.dataset import load_annotations, split_dataset
+from dataset import load_annotations, split_dataset
 
 
 def _write_dataset(root: Path) -> Path:

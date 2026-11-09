@@ -1,6 +1,6 @@
 import pytest
 
-from thermal_focus.decision import decide_focus_quality
+from decision import decide_focus_quality
 
 
 def _prediction(label: str, confidence: float) -> dict[str, object]:

@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 from numpy.typing import NDArray
 
-from .thermal_roi import ThermalBox, draw_thermal_roi
+from thermal_roi import ThermalBox, draw_thermal_roi
 
 STATUS_COLORS = {
     "sharp": (0, 180, 0),

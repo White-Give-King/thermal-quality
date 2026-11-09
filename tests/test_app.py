@@ -3,13 +3,48 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from gradio.routes import App
 
-from thermal_focus import webui_service
-from thermal_focus.webui.annotation_tab import (
+import app as app_entrypoint
+import webui_service
+from webui.annotation_tab import (
     _bounded_roi,
     _roi_input_updates,
     _selected_gallery_index,
 )
-from thermal_focus.webui.app import create_demo, demo
+from webui.app import create_demo, demo
+
+
+def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
+    class FakeDemo:
+        css = "test-css"
+        head = "test-head"
+
+        def launch(self, **kwargs) -> None:
+            self.launch_kwargs = kwargs
+
+    launched_demo = FakeDemo()
+    create_demo_options = {}
+
+    def fake_create_demo(*, inference_only=False):
+        create_demo_options["inference_only"] = inference_only
+        return launched_demo
+
+    monkeypatch.setattr(
+        app_entrypoint,
+        "create_demo",
+        fake_create_demo,
+    )
+
+    app_entrypoint.main([])
+
+    assert app_entrypoint.demo is launched_demo
+    assert create_demo_options == {"inference_only": False}
+    assert launched_demo.launch_kwargs == {
+        "server_name": "0.0.0.0",
+        "server_port": 7860,
+        "show_error": True,
+        "css": "test-css",
+        "head": "test-head",
+    }
 
 
 def test_gradio_page_is_served_and_callbacks_are_registered() -> None:

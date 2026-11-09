@@ -4,8 +4,8 @@ import cv2
 import numpy as np
 import pytest
 
-from thermal_focus.image_io import load_image
-from thermal_focus.thermal_roi import (
+from image_io import load_image
+from thermal_roi import (
     detect_black_border_roi,
     draw_thermal_roi,
     extract_thermal_roi,

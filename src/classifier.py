@@ -18,7 +18,7 @@ from torchvision.models import (
     ResNet18_Weights,
 )
 
-from .decision import LABELS
+from decision import LABELS
 
 CLASSES = LABELS
 ARCHITECTURES = (

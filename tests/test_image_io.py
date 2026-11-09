@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from thermal_focus.image_io import load_image, normalize_image
+from image_io import load_image, normalize_image
 
 
 def test_normalize_gray_bgr_and_bgra_without_mutating_source() -> None:

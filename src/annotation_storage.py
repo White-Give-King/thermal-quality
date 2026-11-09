@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .decision import LABELS
+from decision import LABELS
 
 ROI_DATABASE_FILENAME = "annotations.sqlite3"
 

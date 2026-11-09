@@ -7,7 +7,7 @@ from typing import Any
 import gradio as gr
 import numpy as np
 
-from thermal_focus.webui_service import WebUIService
+from webui_service import WebUIService
 
 
 def list_models(service: WebUIService) -> list[dict[str, Any]]:
