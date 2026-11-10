@@ -44,6 +44,7 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
         "show_error": True,
         "css": "test-css",
         "head": "test-head",
+        "footer_links": ["api"],
     }
 
 
@@ -95,6 +96,53 @@ def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
     assert "置信度阈值 0.60" in model_info
     assert "未记录时默认 224" in model_info
 
+    inference_table = next(
+        item["props"]
+        for item in demo.config["components"]
+        if str(item["props"].get("label", "")).startswith("分类结果表（")
+    )
+    assert inference_table["headers"] == [
+        "文件名",
+        "Prediction",
+        "sharp",
+        "borderline",
+        "defocused",
+        "错误",
+    ]
+
+
+def test_inference_results_use_english_labels_and_probability_columns(monkeypatch) -> None:
+    monkeypatch.setattr(
+        webui_service.WebUIService,
+        "predict",
+        lambda self, files, *, model, device: {
+            "results": [
+                {
+                    "filename": "frame.png",
+                    "prediction": {
+                        "status": "borderline",
+                        "probabilities": {
+                            "sharp": 0.1,
+                            "borderline": 0.7,
+                            "defocused": 0.2,
+                        },
+                    },
+                    "error": None,
+                    "annotated_image": None,
+                }
+            ]
+        },
+    )
+    callback = next(
+        item.fn for item in demo.fns.values() if item.fn.__name__ == "predict_images"
+    )
+
+    _, _, rows = callback(["frame.png"], "model.pt", "cpu")
+
+    assert rows == [
+        ["frame.png", "borderline", "10.0%", "70.0%", "20.0%", ""]
+    ]
+
 
 def test_training_controls_use_recommended_defaults() -> None:
     components = {
@@ -134,20 +182,26 @@ def test_inference_only_ui_excludes_dataset_annotation_and_training() -> None:
 
 
 def test_inference_api_documentation_describes_request_and_response() -> None:
-    dependency = next(
-        item
-        for item in demo.config["dependencies"]
-        if item.get("api_name") == "predict_images"
-    )
+    endpoint = demo.get_api_info()["named_endpoints"]["/predict_images"]
+    assert endpoint["description"] == "对一张或多张图片进行热区裁剪和清晰度三分类。"
 
-    assert dependency["api_description"] == (
-        "上传一张或多张图片进行热区检测和清晰度三分类。输入依次为：图片文件列表、"
-        "已训练的 .pt 模型权重路径、推理设备（auto/cuda/cpu）。返回依次为："
-        "处理状态文本、推理预览图库、分类结果表（文件名、预测标签、模型分数、错误）。"
-        "图库对每张成功处理的图片展示原图热区框和热区裁剪图；单张图片读取或解码失败时，"
-        "错误写入该图片对应的结果行，其他图片继续处理。模型分数是未校准的最高类别 "
-        "softmax 概率乘以 100，不代表准确率。"
-    )
+    parameter_descriptions = {
+        parameter["parameter_name"]: parameter["python_type"]["description"]
+        for parameter in endpoint["parameters"]
+    }
+    assert "图片文件列表" in parameter_descriptions["files"]
+    assert "每张图片最大 40 MiB" in parameter_descriptions["files"]
+    assert ".pt 分类器权重文件路径" in parameter_descriptions["model"]
+    assert "auto、cuda 或 cpu" in parameter_descriptions["device"]
+
+    return_labels = [item["label"] for item in endpoint["returns"]]
+    assert "成功获得推理结果数 / 输入图片总数" in return_labels[0]
+    assert "例如：完成：2/3 张图片获得推理结果" in return_labels[0]
+    assert "原图热区框和热区裁剪图" in return_labels[1]
+    assert "失败图片不展示" in return_labels[1]
+    assert "sharp/borderline/defocused/uncertain" in return_labels[2]
+    assert "softmax 概率百分比〔未校准〕" in return_labels[2]
+    assert "错误列显示原因" in return_labels[2]
 
 
 def test_gradio_workspace_scan_callback_updates_workspace_fields(tmp_path, monkeypatch) -> None:

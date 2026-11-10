@@ -25,14 +25,12 @@ def render_annotated_image(
     *,
     label: str,
     status: str,
-    score: float | None = None,
 ) -> NDArray:
     """Draw the thermal box and a status caption on a copy of the original image."""
     annotated = draw_thermal_roi(image.copy(), thermal_box)
-    caption = label if score is None else f"{label} | Score: {score:.1f}/100"
     cv2.putText(
         annotated,
-        caption,
+        label,
         (12, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.8,
@@ -70,8 +68,6 @@ def write_error_json(
         "status": "error",
         "focus_quality": None,
         "label_zh": "无法评估",
-        "confidence": None,
-        "model_score": None,
         "probabilities": None,
         "task": "thermal_focus_quality",
         "reasons": [reason],
@@ -102,10 +98,6 @@ def write_visualizations(
         thermal_box,
         label=str(result.get("label_zh", result.get("status", "uncertain"))),
         status=str(result.get("status")),
-        score=result.get("model_score")
-        if isinstance(result.get("model_score"), (int, float))
-        and not isinstance(result.get("model_score"), bool)
-        else None,
     )
     _write_image(original_path, annotated)
     _write_image(panel_path, thermal_image)

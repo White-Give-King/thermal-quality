@@ -58,8 +58,6 @@ class InferenceEngine:
             "status": "uncertain",
             "focus_quality": None,
             "label_zh": STATUS_LABELS_ZH["uncertain"],
-            "confidence": None,
-            "model_score": None,
             "probabilities": None,
             "task": "thermal_focus_quality",
             "thermal_roi": {
@@ -98,9 +96,10 @@ class InferenceEngine:
         result["status"] = decision.status
         result["focus_quality"] = decision.status
         result["label_zh"] = STATUS_LABELS_ZH[decision.status]
-        result["confidence"] = model_output["confidence"]
-        result["model_score"] = round(float(model_output["confidence"]) * 100, 1)
-        result["probabilities"] = model_output["probabilities"]
+        if decision.status != "uncertain" or decision.reasons == (
+            "classifier_low_confidence",
+        ):
+            result["probabilities"] = model_output["probabilities"]
         result["reasons"] = list(decision.reasons)
         return result, thermal_image, thermal_box
 

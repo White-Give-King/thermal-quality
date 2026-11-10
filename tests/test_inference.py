@@ -38,7 +38,9 @@ def test_missing_classifier_is_uncertain_and_never_fabricates_focus_quality() ->
     assert result["status"] == "uncertain"
     assert result["reasons"] == ["classifier_weights_missing"]
     assert result["focus_quality"] is None
-    assert result["model_score"] is None
+    assert "model_score" not in result
+    assert "confidence" not in result
+    assert result["probabilities"] is None
     assert result["error"] == "trained focus-quality classifier weights are required"
     assert box == (8, 4, 48, 56)
     assert np.array_equal(panel, image[4:60, 8:56])
@@ -60,8 +62,9 @@ def test_classifier_decides_focus_quality_on_entire_cropped_thermal_panel() -> N
     assert result["focus_quality"] == "sharp"
     assert result["label_zh"] == "清晰，对焦正常"
     assert result["architecture"] == "mobilenet_v3_small"
+    assert "model_score" not in result
+    assert "confidence" not in result
     assert result["probabilities"]["sharp"] > 0.9
-    assert result["model_score"] == round(result["confidence"] * 100, 1)
     assert panel.shape == (56, 48, 3)
 
 

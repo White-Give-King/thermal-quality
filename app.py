@@ -32,6 +32,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         show_error=True,
         css=demo.css,
         head=demo.head,
+        footer_links=["api"],
     )
 
 

@@ -7,7 +7,16 @@ from typing import Any
 import gradio as gr
 import numpy as np
 
+from decision import LABELS
 from webui_service import WebUIService
+
+
+def _set_api_parameter_description(component: Any, description: str) -> None:
+    api_info_as_input = component.api_info_as_input
+    component.api_info_as_input = lambda: {
+        **api_info_as_input(),
+        "additional_description": description,
+    }
 
 
 def list_models(service: WebUIService) -> list[dict[str, Any]]:
@@ -53,8 +62,7 @@ def build_inference_tab(
     service: WebUIService,
 ) -> tuple[gr.Dropdown, gr.Markdown]:
     gr.Markdown(
-        "选择模型与本地图片，支持多选批量推理。模型分数 = 最高类别 softmax 概率 × 100，"
-        "为未校准的原始分数，不代表准确率；低于配置阈值时显示「无法确定」。",
+        "选择模型与本地图片，支持多选批量推理。低于配置置信度阈值时显示「无法确定」。",
         elem_classes=["tab-hint"],
     )
     initial_model = default_model_path(service)
@@ -71,6 +79,10 @@ def build_inference_tab(
             allow_custom_value=True,
             scale=4,
         )
+        _set_api_parameter_description(
+            model_path,
+            "已训练的 .pt 分类器权重文件路径。文件必须存在，并包含本项目支持的三类模型权重。",
+        )
         refresh_models_button = gr.Button("刷新模型列表", scale=0, min_width=130)
         prediction_device = gr.Dropdown(
             label="设备",
@@ -80,14 +92,27 @@ def build_inference_tab(
             scale=1,
             min_width=110,
         )
+        _set_api_parameter_description(
+            prediction_device,
+            "推理设备：auto、cuda 或 cpu。auto 在 CUDA 可用时选择 CUDA，否则使用 CPU；"
+            "选择 cuda 时要求当前环境支持 CUDA。",
+        )
     model_info = gr.Markdown(describe_model(service, initial_model))
+    gr.Markdown(
+        "上传一张或多张图片；单张图片最大 40 MiB。",
+        elem_classes=["tab-hint"],
+    )
     prediction_files = gr.File(
         label="选择图片（可多选）",
-        info="上传一张或多张图片；单张图片最大 40 MiB。",
         file_count="multiple",
         file_types=["image"],
         type="filepath",
         height=168,
+    )
+    _set_api_parameter_description(
+        prediction_files,
+        "图片文件列表。支持 PNG、JPG/JPEG、BMP、TIF/TIFF；每张图片最大 40 MiB，"
+        "宽或高不能超过配置上限（默认 12000 px）。",
     )
     with gr.Row(equal_height=True):
         predict_button = gr.Button(
@@ -97,24 +122,42 @@ def build_inference_tab(
             min_width=150,
             size="lg",
         )
-        prediction_message = gr.Markdown(elem_classes=["status-text"])
+        prediction_message = gr.Markdown(
+            label=(
+                "处理状态统计（成功获得推理结果数 / 输入图片总数；例如："
+                "完成：2/3 张图片获得推理结果）"
+            ),
+            elem_classes=["status-text"],
+        )
+    gr.Markdown(
+        "每张成功处理的图片依次显示原图热区框预览和热区裁剪图。",
+        elem_classes=["tab-hint"],
+    )
     prediction_gallery = gr.Gallery(
-        label="推理预览",
-        info="每张成功处理的图片依次显示原图热区框预览和热区裁剪图。",
+        label=(
+            "推理预览图库（每张成功图片依次展示原图热区框和热区裁剪图；"
+            "标题含文件名及预测类别；失败图片不展示）"
+        ),
         columns=4,
         object_fit="cover",
         type="numpy",
         allow_preview=True,
     )
+    gr.Markdown(
+        "每张图片一行，显示预测类别、各类别概率或错误。",
+        elem_classes=["tab-hint"],
+    )
     prediction_results = gr.Dataframe(
-        label="分类结果",
-        info="每张图片一行；模型分数为未校准的最高类别 softmax 概率百分比。",
-        headers=["文件名", "预测", "模型分数", "错误"],
+        label=(
+            "分类结果表（每张输入图片一行；Prediction 为 sharp/borderline/"
+            "defocused/uncertain；sharp、borderline、defocused 列为 softmax 概率百分比"
+            "〔未校准〕；失败时概率和预测留空，错误列显示原因）"
+        ),
+        headers=["文件名", "Prediction", *LABELS, "错误"],
         value=[],
         interactive=False,
         wrap=True,
     )
-
     def refresh_model_dropdown() -> tuple[Any, str]:
         choices = model_choices(service)
         value = choices[0][1] if choices else None
@@ -165,15 +208,23 @@ def build_inference_tab(
                     )
                 )
         success_count = sum("prediction" in item for item in public_results)
-        rows = [
-            [
-                item["filename"],
-                (item.get("prediction") or {}).get("label_zh", ""),
-                (item.get("prediction") or {}).get("model_score", ""),
-                item.get("error") or "",
-            ]
-            for item in public_results
-        ]
+        rows = []
+        for item in public_results:
+            prediction = item.get("prediction") or {}
+            probabilities = prediction.get("probabilities")
+            probability_cells = (
+                [f"{probabilities[label] * 100:.1f}%" for label in LABELS]
+                if isinstance(probabilities, dict)
+                else [""] * len(LABELS)
+            )
+            rows.append(
+                [
+                    item["filename"],
+                    prediction.get("status", ""),
+                    *probability_cells,
+                    item.get("error") or "",
+                ]
+            )
         return (
             f"完成：{success_count}/{len(public_results)} 张图片获得推理结果。",
             previews,
@@ -185,14 +236,7 @@ def build_inference_tab(
         inputs=[prediction_files, model_path, prediction_device],
         outputs=[prediction_message, prediction_gallery, prediction_results],
         api_name="predict_images",
-        api_description=(
-            "上传一张或多张图片进行热区检测和清晰度三分类。输入依次为：图片文件列表、"
-            "已训练的 .pt 模型权重路径、推理设备（auto/cuda/cpu）。返回依次为："
-            "处理状态文本、推理预览图库、分类结果表（文件名、预测标签、模型分数、错误）。"
-            "图库对每张成功处理的图片展示原图热区框和热区裁剪图；单张图片读取或解码失败时，"
-            "错误写入该图片对应的结果行，其他图片继续处理。模型分数是未校准的最高类别 "
-            "softmax 概率乘以 100，不代表准确率。"
-        ),
+        api_description="对一张或多张图片进行热区裁剪和清晰度三分类。",
     )
 
     return model_path, model_info

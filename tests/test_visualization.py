@@ -14,7 +14,6 @@ def test_visualization_writes_unicode_safe_classifier_outputs(tmp_path) -> None:
         "status": "sharp",
         "focus_quality": "sharp",
         "label_zh": "清晰，对焦正常",
-        "model_score": 80.0,
         "probabilities": {"sharp": 0.8, "borderline": 0.1, "defocused": 0.1},
         "reasons": ["classifier_predicted_sharp"],
     }
@@ -27,4 +26,5 @@ def test_visualization_writes_unicode_safe_classifier_outputs(tmp_path) -> None:
                for key, path in paths.items() if key != "json")
     saved = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     assert saved["probabilities"]["sharp"] == 0.8
-    assert saved["model_score"] == 80.0
+    assert "model_score" not in saved
+    assert "confidence" not in saved
