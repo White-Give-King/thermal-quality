@@ -11,4 +11,4 @@ thermal_roi:
 classifier:
   weights: null
   input_size: 224
-  confidence_threshold: 0.60
+  confidence_threshold: 0.45

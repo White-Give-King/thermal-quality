@@ -94,7 +94,7 @@ def main() -> int:
         for image_path in frame["image_path"]
     ]
     baseline_threshold = float(
-        config.get("classifier", {}).get("confidence_threshold", 0.60)
+        config.get("classifier", {}).get("confidence_threshold", 0.45)
     )
     report = {
         "dataset": str(args.database.resolve()),

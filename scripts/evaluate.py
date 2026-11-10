@@ -42,7 +42,7 @@ def main() -> int:
     frame = load_annotations(args.database, image_root=args.image_root)
     model, metadata = load_classifier(args.model, device=args.device)
     confidence_threshold = float(
-        config.get("classifier", {}).get("confidence_threshold", 0.60)
+        config.get("classifier", {}).get("confidence_threshold", 0.45)
     )
     predictions: list[str] = []
     durations_ms: list[float] = []

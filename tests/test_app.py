@@ -93,7 +93,7 @@ def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
     assert "CUDA 可用时使用 CUDA" in device_info
     assert "809 × 1080" in model_info
     assert "12000 px" in model_info
-    assert "置信度阈值 0.60" in model_info
+    assert "置信度阈值 0.45" in model_info
     assert "未记录时默认 224" in model_info
 
     inference_table = next(

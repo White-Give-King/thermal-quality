@@ -24,7 +24,7 @@ class Decision:
 def decide_focus_quality(
     prediction: dict[str, object] | None,
     *,
-    confidence_threshold: float = 0.60,
+    confidence_threshold: float = 0.45,
 ) -> Decision:
     """Interpret a three-class focus prediction using a confidence threshold."""
     if not math.isfinite(confidence_threshold) or not 0 <= confidence_threshold <= 1:

@@ -90,7 +90,7 @@ class InferenceEngine:
         decision = decide_focus_quality(
             model_output,
             confidence_threshold=float(
-                self.config.get("classifier", {}).get("confidence_threshold", 0.60)
+                self.config.get("classifier", {}).get("confidence_threshold", 0.45)
             ),
         )
         result["status"] = decision.status

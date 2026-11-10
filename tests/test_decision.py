@@ -25,9 +25,14 @@ def test_classifier_decides_focus_quality() -> None:
 
 def test_missing_or_uncertain_prediction_requires_review() -> None:
     missing = decide_focus_quality(None)
-    low_confidence = decide_focus_quality(_prediction("sharp", 0.55))
+    low_confidence = decide_focus_quality(_prediction("sharp", 0.40))
     assert missing.status == "uncertain"
     assert low_confidence.reasons == ("classifier_low_confidence",)
+
+
+def test_default_threshold_accepts_prediction_above_45_percent() -> None:
+    decision = decide_focus_quality(_prediction("sharp", 0.537))
+    assert decision.status == "sharp"
 
 
 @pytest.mark.parametrize(
