@@ -314,11 +314,17 @@ def test_list_trained_models_returns_empty_when_runs_directory_missing(tmp_path)
 
 def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp_path) -> None:
     class SharpPredictor(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
         def forward(self, images: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(images.shape[0])
             return torch.tensor((5.0, 0.0, 0.0), device=images.device).repeat(
                 images.shape[0], 1
             )
 
+    predictor = SharpPredictor()
     config = tmp_path / "config.yaml"
     config.write_text(
         "image:\n"
@@ -341,7 +347,7 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
         webui_service,
         "load_classifier",
         lambda _path, device: (
-            SharpPredictor(),
+            predictor,
             {"input_size": 64, "model_version": "test-model"},
         ),
     )
@@ -350,11 +356,24 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
     assert success
     image_path = tmp_path / "frame.png"
     image_path.write_bytes(encoded.tobytes())
+    second_image_path = tmp_path / "frame2.png"
+    second_image_path.write_bytes(encoded.tobytes())
+    invalid_image_path = tmp_path / "invalid.png"
+    invalid_image_path.write_bytes(b"not an image")
 
     response = WebUIService().predict(
-        [image_path], model=str(checkpoint), device="cpu"
+        [image_path, invalid_image_path, second_image_path],
+        model=str(checkpoint),
+        device="cpu",
     )
 
+    assert predictor.batch_sizes == [2]
+    assert [item["filename"] for item in response["results"]] == [
+        "frame.png",
+        "invalid.png",
+        "frame2.png",
+    ]
+    assert "error" in response["results"][1]
     result = response["results"][0]
     assert result["prediction"]["status"] == "sharp"
     assert result["prediction"]["model_version"] == "test-model"

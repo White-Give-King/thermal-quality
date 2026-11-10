@@ -83,6 +83,7 @@ def build_inference_tab(
     model_info = gr.Markdown(describe_model(service, initial_model))
     prediction_files = gr.File(
         label="选择图片（可多选）",
+        info="上传一张或多张图片；单张图片最大 40 MiB。",
         file_count="multiple",
         file_types=["image"],
         type="filepath",
@@ -99,6 +100,7 @@ def build_inference_tab(
         prediction_message = gr.Markdown(elem_classes=["status-text"])
     prediction_gallery = gr.Gallery(
         label="推理预览",
+        info="每张成功处理的图片依次显示原图热区框预览和热区裁剪图。",
         columns=4,
         object_fit="cover",
         type="numpy",
@@ -106,6 +108,7 @@ def build_inference_tab(
     )
     prediction_results = gr.Dataframe(
         label="分类结果",
+        info="每张图片一行；模型分数为未校准的最高类别 softmax 概率百分比。",
         headers=["文件名", "预测", "模型分数", "错误"],
         value=[],
         interactive=False,
@@ -181,6 +184,15 @@ def build_inference_tab(
         predict_images,
         inputs=[prediction_files, model_path, prediction_device],
         outputs=[prediction_message, prediction_gallery, prediction_results],
+        api_name="predict_images",
+        api_description=(
+            "上传一张或多张图片进行热区检测和清晰度三分类。输入依次为：图片文件列表、"
+            "已训练的 .pt 模型权重路径、推理设备（auto/cuda/cpu）。返回依次为："
+            "处理状态文本、推理预览图库、分类结果表（文件名、预测标签、模型分数、错误）。"
+            "图库对每张成功处理的图片展示原图热区框和热区裁剪图；单张图片读取或解码失败时，"
+            "错误写入该图片对应的结果行，其他图片继续处理。模型分数是未校准的最高类别 "
+            "softmax 概率乘以 100，不代表准确率。"
+        ),
     )
 
     return model_path, model_info

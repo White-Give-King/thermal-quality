@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -148,16 +149,51 @@ def classify_panel(
     model: nn.Module, roi: NDArray[np.uint8], *, device: str, input_size: int = 224
 ) -> dict[str, Any]:
     """Return actual softmax probabilities and the predicted class."""
+    return classify_panels(model, [roi], device=device, input_size=input_size)[0]
+
+
+@torch.inference_mode()
+def classify_panels(
+    model: nn.Module,
+    rois: Sequence[NDArray[np.uint8]],
+    *,
+    device: str,
+    input_size: int = 224,
+) -> list[dict[str, Any]]:
+    """Classify multiple thermal panels in one model forward pass."""
+    if not rois:
+        return []
+    tensors = [preprocess_panel(roi, input_size) for roi in rois]
+    return classify_tensors(model, tensors, device=device)
+
+
+@torch.inference_mode()
+def classify_tensors(
+    model: nn.Module,
+    tensors: Sequence[torch.Tensor],
+    *,
+    device: str,
+) -> list[dict[str, Any]]:
+    """Run one model forward pass over already-preprocessed panels."""
+    if not tensors:
+        return []
     target_device = torch.device(device)
     model.to(target_device).eval()
-    tensor = preprocess_panel(roi, input_size).unsqueeze(0).to(target_device)
-    logits = model(tensor)
-    if logits.ndim != 2 or logits.shape != (1, len(CLASSES)):
+    batch = torch.stack(list(tensors)).to(target_device)
+    logits = model(batch)
+    if logits.ndim != 2 or logits.shape != (len(tensors), len(CLASSES)):
         raise ValueError(f"classifier returned unexpected logits shape {tuple(logits.shape)}")
-    probabilities = torch.softmax(logits[0], dim=0).cpu().numpy()
-    index = int(np.argmax(probabilities))
-    return {
-        "predicted_class": CLASSES[index],
-        "confidence": float(probabilities[index]),
-        "probabilities": {name: float(probabilities[i]) for i, name in enumerate(CLASSES)},
-    }
+    probabilities = torch.softmax(logits, dim=1).cpu().numpy()
+    results: list[dict[str, Any]] = []
+    for row in probabilities:
+        index = int(np.argmax(row))
+        results.append(
+            {
+                "predicted_class": CLASSES[index],
+                "confidence": float(row[index]),
+                "probabilities": {
+                    name: float(row[i]) for i, name in enumerate(CLASSES)
+                },
+            }
+        )
+    return results

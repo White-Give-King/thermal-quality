@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from image_io import collect_image_paths, load_image_for
-from inference import InferenceEngine, load_config
+from inference import INFERENCE_BATCH_SIZE, InferenceEngine, load_config
 from visualization import write_error_json, write_visualizations
 
 LOGGER = logging.getLogger("thermal_focus_quality.predict")
@@ -77,36 +77,74 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not paths:
             raise ValueError(f"no supported image files found in {args.input}")
         failures = 0
-        for path in paths:
-            output_dir, stem = _output_location(path, args.input, args.output)
-            image_name = (
-                path.relative_to(args.input).as_posix() if args.input.is_dir() else path.name
+        for offset in range(0, len(paths), INFERENCE_BATCH_SIZE):
+            batch_paths = paths[offset : offset + INFERENCE_BATCH_SIZE]
+            loaded = []
+            for path in batch_paths:
+                image_name = (
+                    path.relative_to(args.input).as_posix()
+                    if args.input.is_dir()
+                    else path.name
+                )
+                try:
+                    loaded.append((path, image_name, load_image_for(path, config)))
+                except (OSError, ValueError, RuntimeError) as exc:
+                    failures += 1
+                    output_dir, stem = _output_location(path, args.input, args.output)
+                    error_json = write_error_json(output_dir, stem, image_name, str(exc))
+                    LOGGER.error(
+                        "prediction failed for %s: %s (json=%s)",
+                        path,
+                        exc,
+                        error_json,
+                    )
+
+            outcomes = engine.predict_batch(
+                [(image_data, image_name) for _, image_name, image_data in loaded]
             )
-            try:
-                image_data = load_image_for(path, config)
-                result, thermal_image, thermal_box = engine.predict_array(
-                    image_data, image_name=image_name
-                )
-                visual_paths = write_visualizations(
-                    output_dir,
-                    stem,
-                    image_data.image,
-                    thermal_image,
-                    thermal_box,
-                    result,
-                )
-                LOGGER.info(
-                    "%s focus_quality=%s confidence=%s json=%s",
-                    path,
-                    result["status"],
-                    result["confidence"],
-                    visual_paths["json"],
-                )
-                failures += int(result["error"] is not None)
-            except (OSError, ValueError, RuntimeError) as exc:
-                failures += 1
-                error_json = write_error_json(output_dir, stem, image_name, str(exc))
-                LOGGER.error("prediction failed for %s: %s (json=%s)", path, exc, error_json)
+            for (path, image_name, image_data), outcome in zip(loaded, outcomes):
+                output_dir, stem = _output_location(path, args.input, args.output)
+                if isinstance(outcome, Exception):
+                    failures += 1
+                    error_json = write_error_json(
+                        output_dir, stem, image_name, str(outcome)
+                    )
+                    LOGGER.error(
+                        "prediction failed for %s: %s (json=%s)",
+                        path,
+                        outcome,
+                        error_json,
+                    )
+                    continue
+                result, thermal_image, thermal_box = outcome
+                try:
+                    visual_paths = write_visualizations(
+                        output_dir,
+                        stem,
+                        image_data.image,
+                        thermal_image,
+                        thermal_box,
+                        result,
+                    )
+                    LOGGER.info(
+                        "%s focus_quality=%s confidence=%s json=%s",
+                        path,
+                        result["status"],
+                        result["confidence"],
+                        visual_paths["json"],
+                    )
+                    failures += int(result["error"] is not None)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    failures += 1
+                    error_json = write_error_json(
+                        output_dir, stem, image_name, str(exc)
+                    )
+                    LOGGER.error(
+                        "prediction failed for %s: %s (json=%s)",
+                        path,
+                        exc,
+                        error_json,
+                    )
         return 1 if failures else 0
     except (OSError, ValueError, RuntimeError) as exc:
         LOGGER.error("could not initialize prediction: %s", exc)

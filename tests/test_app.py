@@ -133,6 +133,23 @@ def test_inference_only_ui_excludes_dataset_annotation_and_training() -> None:
     assert not {"train", "scan_workspaces", "begin_annotation"} & callback_names
 
 
+def test_inference_api_documentation_describes_request_and_response() -> None:
+    dependency = next(
+        item
+        for item in demo.config["dependencies"]
+        if item.get("api_name") == "predict_images"
+    )
+
+    assert dependency["api_description"] == (
+        "上传一张或多张图片进行热区检测和清晰度三分类。输入依次为：图片文件列表、"
+        "已训练的 .pt 模型权重路径、推理设备（auto/cuda/cpu）。返回依次为："
+        "处理状态文本、推理预览图库、分类结果表（文件名、预测标签、模型分数、错误）。"
+        "图库对每张成功处理的图片展示原图热区框和热区裁剪图；单张图片读取或解码失败时，"
+        "错误写入该图片对应的结果行，其他图片继续处理。模型分数是未校准的最高类别 "
+        "softmax 概率乘以 100，不代表准确率。"
+    )
+
+
 def test_gradio_workspace_scan_callback_updates_workspace_fields(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     monkeypatch.setattr(webui_service, "ROOT", project_root)

@@ -8,6 +8,7 @@ from classifier import (
     MODEL_VERSION,
     build_classifier,
     classify_panel,
+    classify_panels,
     load_classifier,
     preprocess_panel,
 )
@@ -87,6 +88,34 @@ def test_legacy_checkpoint_defaults_to_mobilenet_v3_small(tmp_path) -> None:
     _, metadata = load_classifier(checkpoint)
 
     assert metadata["architecture"] == "mobilenet_v3_small"
+
+
+def test_classify_panels_uses_one_forward_pass_and_keeps_per_image_results() -> None:
+    class BatchPredictor(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def forward(self, images: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(images.shape[0])
+            return torch.tensor(
+                ((5.0, 0.0, 0.0), (0.0, 5.0, 0.0)), device=images.device
+            )[: images.shape[0]]
+
+    model = BatchPredictor()
+    panels = [
+        np.full((32, 48, 3), 40, dtype=np.uint8),
+        np.full((48, 32, 3), 180, dtype=np.uint8),
+    ]
+
+    predictions = classify_panels(model, panels, device="cpu", input_size=64)
+
+    assert model.batch_sizes == [2]
+    assert [item["predicted_class"] for item in predictions] == [
+        CLASSES[0],
+        CLASSES[1],
+    ]
+    assert set(predictions[0]["probabilities"]) == set(CLASSES)
 
 
 def test_build_classifier_rejects_unknown_architecture() -> None:

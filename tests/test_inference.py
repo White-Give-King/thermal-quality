@@ -86,3 +86,69 @@ def test_unexpected_canvas_size_fails_before_classification() -> None:
         assert "expected_width" in str(exc)
     else:
         raise AssertionError("unexpected input canvas dimensions were accepted")
+
+
+def test_predict_batch_keeps_order_and_isolates_bad_images() -> None:
+    class OrderedPredictor(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def forward(self, images: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(images.shape[0])
+            return torch.tensor(
+                ((5.0, 0.0, 0.0), (0.0, 5.0, 0.0)), device=images.device
+            )[: images.shape[0]]
+
+    predictor = OrderedPredictor()
+    engine = InferenceEngine(_config(), classifier=predictor)
+    image = np.zeros((64, 64, 3), dtype=np.uint8)
+    invalid_image = np.zeros((32, 32, 3), dtype=np.uint8)
+
+    outcomes = engine.predict_batch(
+        [
+            (_image_data(image), "first.png"),
+            (_image_data(invalid_image), "invalid.png"),
+            (_image_data(image), "third.png"),
+        ]
+    )
+
+    assert predictor.batch_sizes == [2]
+    first = outcomes[0]
+    assert not isinstance(first, Exception)
+    assert first[0]["image"] == "first.png"
+    assert first[0]["status"] == "sharp"
+    assert isinstance(outcomes[1], ValueError)
+    assert "expected_width" in str(outcomes[1])
+    third = outcomes[2]
+    assert not isinstance(third, Exception)
+    assert third[0]["image"] == "third.png"
+    assert third[0]["status"] == "borderline"
+
+
+def test_predict_batch_caps_model_batches_and_keeps_all_results() -> None:
+    class BatchSizePredictor(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def forward(self, images: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(images.shape[0])
+            return torch.tensor((5.0, 0.0, 0.0), device=images.device).repeat(
+                images.shape[0], 1
+            )
+
+    predictor = BatchSizePredictor()
+    engine = InferenceEngine(_config(), classifier=predictor)
+    image = _image_data(np.zeros((64, 64, 3), dtype=np.uint8))
+    inputs = [(image, f"{index}.png") for index in range(17)]
+
+    outcomes = engine.predict_batch(inputs)
+
+    assert predictor.batch_sizes == [16, 1]
+    assert len(outcomes) == len(inputs)
+    predicted_names = []
+    for outcome in outcomes:
+        assert not isinstance(outcome, Exception)
+        predicted_names.append(outcome[0]["image"])
+    assert predicted_names == [name for _, name in inputs]

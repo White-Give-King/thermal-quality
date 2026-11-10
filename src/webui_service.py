@@ -35,11 +35,12 @@ from classifier import (
 from decision import STATUS_LABELS_ZH
 from image_io import (
     IMAGE_SUFFIXES,
+    ImageData,
     collect_image_paths,
     decode_image_bytes,
     load_image_for,
 )
-from inference import InferenceEngine, load_config
+from inference import INFERENCE_BATCH_SIZE, InferenceEngine, load_config
 from thermal_roi import (
     ThermalBox,
     detect_black_border_roi,
@@ -1126,49 +1127,60 @@ class WebUIService:
                 self._model_cache.clear()
                 self._model_cache[key] = cached
         engine, _ = cached
-        results: list[dict[str, Any]] = []
-        for file_path in file_paths:
-            path = Path(file_path)
-            filename = path.name
-            try:
-                if path.stat().st_size > MAX_UPLOAD_BYTES:
-                    results.append(
-                        {
+        results: list[dict[str, Any] | None] = [None] * len(file_paths)
+        for offset in range(0, len(file_paths), INFERENCE_BATCH_SIZE):
+            loaded: list[tuple[int, Path, ImageData]] = []
+            batch_paths = file_paths[offset : offset + INFERENCE_BATCH_SIZE]
+            for index, file_path in enumerate(batch_paths, start=offset):
+                path = Path(file_path)
+                filename = path.name
+                try:
+                    if path.stat().st_size > MAX_UPLOAD_BYTES:
+                        results[index] = {
                             "filename": filename,
                             "error": f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
                         }
+                        continue
+                    data = path.read_bytes()
+                    settings = engine.config.get("image", {})
+                    image_data = decode_image_bytes(
+                        data,
+                        max_dimension=int(settings.get("max_dimension", 12000)),
+                        float_range=settings.get("float_range"),
                     )
+                    loaded.append((index, path, image_data))
+                except (OSError, ValueError, RuntimeError) as exc:
+                    results[index] = {"filename": filename, "error": str(exc)}
+
+            predictions = engine.predict_batch(
+                [(image_data, path.name) for _, path, image_data in loaded]
+            )
+            for (index, path, image_data), outcome in zip(loaded, predictions):
+                filename = path.name
+                if isinstance(outcome, Exception):
+                    results[index] = {"filename": filename, "error": str(outcome)}
                     continue
-                data = path.read_bytes()
-                settings = engine.config.get("image", {})
-                image_data = decode_image_bytes(
-                    data,
-                    max_dimension=int(settings.get("max_dimension", 12000)),
-                    float_range=settings.get("float_range"),
-                )
-                prediction, thermal_image, thermal_box = engine.predict_array(
-                    image_data,
-                    image_name=filename,
-                )
-                annotated = render_annotated_image(
-                    image_data.image,
-                    thermal_box,
-                    label=str(
-                        prediction.get("label_zh", STATUS_LABELS_ZH["uncertain"])
-                    ),
-                    status=str(prediction["status"]),
-                )
-                results.append(
-                    {
+                prediction, thermal_image, thermal_box = outcome
+                try:
+                    annotated = render_annotated_image(
+                        image_data.image,
+                        thermal_box,
+                        label=str(
+                            prediction.get("label_zh", STATUS_LABELS_ZH["uncertain"])
+                        ),
+                        status=str(prediction["status"]),
+                    )
+                    results[index] = {
                         "filename": filename,
                         "prediction": prediction,
                         "annotated_image": cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
                         "thermal_image": cv2.cvtColor(thermal_image, cv2.COLOR_BGR2RGB),
                     }
-                )
-            except (OSError, ValueError, RuntimeError) as exc:
-                results.append({"filename": filename, "error": str(exc)})
-        return {"results": results}
+                except (OSError, ValueError, RuntimeError) as exc:
+                    results[index] = {"filename": filename, "error": str(exc)}
+        if any(result is None for result in results):
+            raise RuntimeError("batch prediction did not produce a result for every image")
+        return {"results": [result for result in results if result is not None]}
 
     def start_training(self, payload: dict[str, Any]) -> dict[str, Any]:
         options = _validate_training_options(payload)
