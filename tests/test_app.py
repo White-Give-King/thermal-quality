@@ -71,6 +71,9 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
     assert page.status_code == 200
     assert "红外热图清晰度与对焦质量" in page.text
 
+    assert "数据集" not in {
+        item["props"].get("label") for item in demo.config["components"]
+    }
     assert {
         "scan_workspaces",
         "begin_annotation",
@@ -475,72 +478,3 @@ def test_annotation_counter_has_room_for_status_text() -> None:
     assert counter["props"]["min_width"] == 260
     assert "#annotation-counter p {" in demo.css
     assert "overflow-wrap: anywhere;" in demo.css
-
-
-def _write_inspection_json(path, with_picture: bool) -> None:
-    import json
-
-    payload = {
-        "code": 200,
-        "msg": "操作成功",
-        "data": {
-            "deptName": "A10分部",
-            "startTime": 1767196800000,
-            "inspectionDeviceTypes": [
-                {
-                    "name": "M1-401机房PDU",
-                    "inspectionDevices": [
-                        {
-                            "id": "dev-1",
-                            "name": "M1-401机房PDU",
-                            "installationSite": "401机房",
-                            "picture": "https://example.com/1.jpg"
-                            if with_picture
-                            else "",
-                        }
-                    ],
-                }
-            ],
-        },
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-
-def test_dataset_preview_reports_grouped_path_and_skip(tmp_path) -> None:
-    import json
-
-    mixed = tmp_path / "mixed"
-    mixed.mkdir()
-    _write_inspection_json(mixed / "with-pic.json", with_picture=True)
-    empty = mixed / "empty.json"
-    payload = json.loads((mixed / "with-pic.json").read_text(encoding="utf-8"))
-    payload["data"]["inspectionDeviceTypes"][0]["inspectionDevices"][0]["picture"] = ""
-    empty.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    callback = next(
-        item.fn for item in demo.fns.values() if item.fn.__name__ == "preview_json"
-    )
-    summary, table = callback([], str(mixed))
-
-    assert "data/A10/" in summary
-    assert "images_source/" in summary
-    assert "无有效图片，将跳过归档与下载" in summary
-
-
-def test_dataset_download_skips_json_without_valid_pictures(tmp_path, monkeypatch) -> None:
-    import pytest
-    import gradio as gr
-
-    project_root = tmp_path / "project"
-    monkeypatch.setattr(webui_service, "ROOT", project_root)
-    empty_json = tmp_path / "empty.json"
-    _write_inspection_json(empty_json, with_picture=False)
-
-    callback = next(
-        item.fn for item in demo.fns.values() if item.fn.__name__ == "start_download"
-    )
-    with pytest.raises(gr.Error, match="无有效图片已跳过"):
-        list(callback([], str(empty_json), ""))
-
-    # 未创建任何工作区目录（不归档、不下载）。
-    assert not (project_root / "data").exists()

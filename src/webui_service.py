@@ -458,101 +458,11 @@ def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, A
     return [entry for _, entry in entries]
 
 
-class InspectionDownloadJobs:
-    """Run download_inspection_pictures.py as background subprocesses with streaming logs."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._jobs: dict[str, dict[str, Any]] = {}
-
-    def start(
-        self,
-        json_input: str,
-        output_dir: str | None = None,
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        job_id = uuid.uuid4().hex
-        command = [
-            sys.executable,
-            "-u",
-            str(ROOT / "scripts" / "download_inspection_pictures.py"),
-            json_input,
-        ]
-        if output_dir:
-            command.extend(["-o", output_dir])
-        if dry_run:
-            command.append("--dry-run")
-
-        # 子进程输出经管道读入内存，不在磁盘写日志文件
-        process = subprocess.Popen(
-            command,
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=_utf8_env(),
-            bufsize=1,
-        )
-        with self._lock:
-            self._jobs[job_id] = {
-                "job_id": job_id,
-                "status": "running",
-                "return_code": None,
-                "log_tail": "",
-                "process": process,
-                "dry_run": dry_run,
-                "json_input": json_input,
-                "output_dir": output_dir,
-            }
-        threading.Thread(target=self._watch, args=(job_id,), daemon=True).start()
-        return {
-            "job_id": job_id,
-            "status": "running",
-            "dry_run": dry_run,
-        }
-
-    def _watch(self, job_id: str) -> None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job:
-                return
-            process = job["process"]
-        if process.stdout is not None:
-            for chunk in process.stdout:
-                with self._lock:
-                    job = self._jobs.get(job_id)
-                    if job is None:
-                        break
-                    job["log_tail"] = (job["log_tail"] + chunk)[-LOG_TAIL_CHARS:]
-        return_code = process.wait()
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job:
-                job["return_code"] = return_code
-                job["status"] = "completed" if return_code == 0 else "failed"
-
-    def status(self, job_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return None
-            return {
-                "job_id": job["job_id"],
-                "status": job["status"],
-                "return_code": job["return_code"],
-                "dry_run": job.get("dry_run"),
-                "log": job["log_tail"],
-            }
-
-
 class WebUIService:
     """Hold the WebUI state and expose the operations behind the former HTTP API."""
 
     def __init__(self) -> None:
         self.jobs = TrainingJobs()
-        self.download_jobs = InspectionDownloadJobs()
         self.config_path = Path(
             os.environ.get("THERMAL_FOCUS_CONFIG", str(ROOT / "configs" / "default.yaml"))
         ).expanduser()
@@ -1190,18 +1100,4 @@ class WebUIService:
         status = self.jobs.status(job_id)
         if status is None:
             raise ValueError("training job not found")
-        return status
-
-    def start_download(
-        self,
-        json_input: str,
-        output_dir: str | None = None,
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        return self.download_jobs.start(json_input, output_dir=output_dir, dry_run=dry_run)
-
-    def download_status(self, job_id: str) -> dict[str, Any]:
-        status = self.download_jobs.status(job_id)
-        if status is None:
-            raise ValueError("download job not found")
         return status

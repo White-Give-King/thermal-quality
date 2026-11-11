@@ -5,7 +5,6 @@ from __future__ import annotations
 import gradio as gr
 
 from webui.annotation_tab import build_annotation_tab
-from webui.dataset_tab import build_dataset_tab
 from webui.inference_tab import build_inference_tab
 from webui.training_tab import build_training_tab
 from webui.workspace import build_workspace_panel
@@ -29,8 +28,6 @@ def create_ui(*, inference_only: bool = False) -> gr.Blocks:
         else:
             workspace = build_workspace_panel(service)
             with gr.Tabs():
-                with gr.Tab("数据集"):
-                    build_dataset_tab(service, demo)
                 with gr.Tab("图片标注"):
                     build_annotation_tab(service, workspace)
                 with gr.Tab("图片推理"):

@@ -16,8 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--port",
         type=int,
-        default=7860,
-        help="port for the Gradio server (default: 7860)",
+        default=80,
+        help="port for the Gradio server (default: 80)",
     )
     return parser
 

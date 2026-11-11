@@ -45,14 +45,12 @@ python -c "import torch; print(torch.cuda.is_available())"
 ├── configs/       # 图像与热区配置
 ├── data/          # 任务工作区（含标注数据库、裁剪图和各工作区的 runs/ 模型输出）
 ├── runs/          # 旧版模型输出目录，仍会被模型列表扫描
-├── scripts/       # 推理、训练、评估、阈值校准和数据下载工具
+├── scripts/       # 推理、训练、评估和阈值校准
 ├── src/           # Python 源码模块直接位于此处，WebUI 界面代码在 webui/ 子目录
 ├── tests/         # 自动化测试
 ├── 数据集/        # 原始图片与设备元数据
 └── archive/       # 已封存的旧标注和历史训练产物
 ```
-
-下载工具位于 `scripts/download_inspection_pictures.py`，默认读取 `数据集/A2分部.json`；可用 `--help` 查看参数。`数据集/` 下的原图与 JSON 元数据保持原位，避免影响现有数据路径。
 
 ## 有效热区
 
