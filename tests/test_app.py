@@ -114,7 +114,40 @@ def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
     ]
 
 
+def test_inference_gallery_shows_only_annotated_originals_in_single_column() -> None:
+    gallery = next(
+        item["props"]
+        for item in demo.config["components"]
+        if item["props"].get("elem_id") == "prediction-gallery"
+    )
+
+    assert gallery["columns"] in (1, [1])
+    assert gallery["height"] == 400
+    assert gallery["allow_preview"] is False
+    assert "仅展示带热区框的原图" in gallery["label"]
+    assert "热区裁剪图" not in gallery["label"]
+
+
+def test_inference_button_is_enabled_only_when_images_are_uploaded() -> None:
+    button = next(
+        item["props"]
+        for item in demo.config["components"]
+        if item["props"].get("value") == "开始推理"
+    )
+    callback = next(
+        item.fn
+        for item in demo.fns.values()
+        if item.fn.__name__ == "update_predict_button"
+    )
+
+    assert button["interactive"] is False
+    assert callback(None)["interactive"] is False
+    assert callback([])["interactive"] is False
+    assert callback(["frame.png"])["interactive"] is True
+
+
 def test_inference_results_use_english_labels_and_probability_columns(monkeypatch) -> None:
+    annotated_image = object()
     monkeypatch.setattr(
         webui_service.WebUIService,
         "predict",
@@ -124,6 +157,7 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
                     "filename": "frame.png",
                     "prediction": {
                         "status": "borderline",
+                        "label_zh": "临界",
                         "probabilities": {
                             "sharp": 0.1,
                             "borderline": 0.7,
@@ -131,7 +165,7 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
                         },
                     },
                     "error": None,
-                    "annotated_image": None,
+                    "annotated_image": annotated_image,
                 }
             ]
         },
@@ -140,11 +174,14 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
         item.fn for item in demo.fns.values() if item.fn.__name__ == "predict_images"
     )
 
-    _, _, rows = callback(["frame.png"], "model.pt", "cpu")
+    _, previews, rows = callback(["frame.png"], "model.pt", "cpu")
 
     assert rows == [
         ["frame.png", "borderline", "10.0%", "70.0%", "20.0%", ""]
     ]
+    assert len(previews) == 1
+    assert previews[0][0] is annotated_image
+    assert previews[0][1] == "frame.png: 原图热区框 — 临界"
 
 
 def test_training_controls_use_recommended_defaults() -> None:
@@ -200,7 +237,8 @@ def test_inference_api_documentation_describes_request_and_response() -> None:
     return_labels = [item["label"] for item in endpoint["returns"]]
     assert "成功获得推理结果数 / 输入图片总数" in return_labels[0]
     assert "例如：完成：2/3 张图片获得推理结果" in return_labels[0]
-    assert "原图热区框和热区裁剪图" in return_labels[1]
+    assert "仅展示带热区框的原图" in return_labels[1]
+    assert "热区裁剪图" not in return_labels[1]
     assert "失败图片不展示" in return_labels[1]
     assert "sharp/borderline/defocused/uncertain" in return_labels[2]
     assert "softmax 概率百分比〔未校准〕" in return_labels[2]

@@ -121,6 +121,7 @@ def build_inference_tab(
             scale=0,
             min_width=150,
             size="lg",
+            interactive=False,
         )
         prediction_message = gr.Markdown(
             label=(
@@ -130,18 +131,20 @@ def build_inference_tab(
             elem_classes=["status-text"],
         )
     gr.Markdown(
-        "每张成功处理的图片依次显示原图热区框预览和热区裁剪图。",
+        "每张成功处理的图片仅显示带热区框的原图。",
         elem_classes=["tab-hint"],
     )
     prediction_gallery = gr.Gallery(
         label=(
-            "推理预览图库（每张成功图片依次展示原图热区框和热区裁剪图；"
+            "推理预览图库（每张成功图片仅展示带热区框的原图；"
             "标题含文件名及预测类别；失败图片不展示）"
         ),
-        columns=4,
+        columns=1,
         object_fit="cover",
         type="numpy",
-        allow_preview=True,
+        allow_preview=False,
+        height=400,
+        elem_id="prediction-gallery",
     )
     gr.Markdown(
         "每张图片一行，显示预测类别、各类别概率或错误。",
@@ -177,6 +180,15 @@ def build_inference_tab(
         outputs=[model_info],
     )
 
+    def update_predict_button(files: list[str] | None) -> Any:
+        return gr.update(interactive=bool(files))
+
+    prediction_files.change(
+        update_predict_button,
+        inputs=[prediction_files],
+        outputs=[predict_button],
+    )
+
     def predict_images(
         files: list[str] | None, model: str, device: str
     ) -> tuple[str, list[tuple[np.ndarray, str]], list[list[Any]]]:
@@ -199,12 +211,6 @@ def build_inference_tab(
                     (
                         item["annotated_image"],
                         f'{item["filename"]}: 原图热区框 — {label}',
-                    )
-                )
-                previews.append(
-                    (
-                        item["thermal_image"],
-                        f'{item["filename"]}: 热区裁剪',
                     )
                 )
         success_count = sum("prediction" in item for item in public_results)

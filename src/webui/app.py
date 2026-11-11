@@ -89,6 +89,29 @@ _CSS = """
     height: 84px !important;
     transform: none !important;
 }
+#prediction-gallery .grid-wrap {
+    height: 100% !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    overflow-y: auto !important;
+    scroll-snap-type: y mandatory;
+}
+#prediction-gallery .grid-container {
+    height: 100% !important;
+    grid-auto-rows: 100% !important;
+}
+#prediction-gallery .gallery-item,
+#prediction-gallery .thumbnail-lg {
+    height: 100% !important;
+    min-height: 0 !important;
+    aspect-ratio: auto !important;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+}
+#prediction-gallery .thumbnail-lg {
+    border-top: 0 !important;
+    border-bottom: 0 !important;
+}
 .workspace-status,
 .workspace-summary {
     padding: 3px 6px;
