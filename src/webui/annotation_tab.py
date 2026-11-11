@@ -6,11 +6,10 @@ from typing import Any
 
 import gradio as gr
 
-from webui.workspace import WorkspacePanel
+from webui.data_root import DataRootPanel
 from webui_service import WebUIService
 
-# 未选择工作区时标注视图组件的占位输出。
-_no_session_annotation = ([], "请先在上方选择工作区。", 1, 0, 0, 1, 1, [])
+_no_session_annotation = ([], "点击“载入 data 图片”开始标注。", 1, 0, 0, 1, 1, [])
 
 
 def _selected_gallery_index(
@@ -93,15 +92,17 @@ def _annotation_outputs(
     )
 
 
-def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> None:
+def build_annotation_tab(
+    service: WebUIService, data_root: DataRootPanel, blocks: gr.Blocks
+) -> None:
     gr.Markdown(
-        "选择上方工作区后即可开始标注。"
+        "打开页面后会自动载入 `data/` 中的原始图片。"
         "点击下方缩略图可放大预览，"
         "点击「清晰 / 临界 / 模糊」保存标注并切换到下一张，"
         "也可按 ← 清晰、↑ 临界、→ 模糊快速标注；"
         "每张图片独立识别黑边，未识别时使用居中热区；"
-        "每图裁剪参数保存在工作区的 `annotations.sqlite3`，"
-        "标签与热区裁剪图写入 `data/<工作区名>/`。",
+        "每图裁剪参数保存在 `data/annotations.sqlite3`，"
+        "标签与热区裁剪图写入 `data/images/`。",
         elem_classes=["tab-hint"],
     )
     annotation_session = gr.State("")
@@ -179,7 +180,7 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
             elem_id="btn-defocused",
         )
         annotation_counter = gr.Markdown(
-            "选择工作区后显示进度。",
+            "打开页面后自动载入。",
             elem_id="annotation-counter",
             elem_classes=["status-text"],
             scale=1,
@@ -239,9 +240,9 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
     def _annotation_buttons_update(enabled: bool) -> tuple[Any, ...]:
         return tuple(gr.update(interactive=enabled) for _ in annotation_buttons)
 
-    def begin_annotation(root: str, name: str, original: bool) -> tuple[Any, ...]:
+    def begin_annotation(root: str, original: bool) -> tuple[Any, ...]:
         try:
-            result = service.start_annotation(root, name)
+            result = service.start_annotation(root)
             return (
                 result["session_id"],
                 (
@@ -259,9 +260,9 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
                 *_annotation_buttons_update(False),
             )
 
-    workspace.select.change(
+    blocks.load(
         begin_annotation,
-        inputs=[workspace.root, workspace.select, original_view],
+        inputs=[data_root.root, original_view],
         outputs=[
             annotation_session,
             annotation_message,
@@ -306,7 +307,7 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
         session_id: str, original: bool
     ) -> tuple[Any, ...]:
         if not session_id:
-            raise gr.Error("请先在上方选择工作区。")
+            raise gr.Error("请先载入 data 图片。")
         try:
             result = service.claim_next_annotation(session_id)
             outputs = list(_annotation_outputs(service, session_id, original=original))
@@ -329,7 +330,7 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
         event: gr.SelectData,
     ) -> tuple[Any, ...]:
         if not session_id:
-            raise gr.Error("请先在上方选择工作区。")
+            raise gr.Error("请先载入 data 图片。")
         try:
             absolute_index = _selected_gallery_index(indices, event.index)
         except ValueError as exc:
@@ -358,7 +359,7 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
         session_id: str, label: str, original: bool = False
     ) -> tuple[Any, ...]:
         if not session_id:
-            raise gr.Error("请先在上方选择工作区。")
+            raise gr.Error("请先载入 data 图片。")
         result = service.save_label(session_id, label, advance=True)
         outputs = list(_annotation_outputs(service, session_id, original=original))
         if result["skipped"]:
@@ -395,7 +396,7 @@ def build_annotation_tab(service: WebUIService, workspace: WorkspacePanel) -> No
         original: bool,
     ) -> tuple[Any, ...]:
         if not session_id:
-            raise gr.Error("请先在上方选择工作区。")
+            raise gr.Error("请先载入 data 图片。")
         result = service.update_roi(
             session_id,
             int(x),

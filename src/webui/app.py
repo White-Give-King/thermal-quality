@@ -1,13 +1,14 @@
-"""Gradio WebUI 组装：工作区面板与各标签页在此拼装为完整界面。"""
+"""Gradio WebUI 组装：固定数据目录面板与各功能标签页在此拼装。"""
 
 from __future__ import annotations
 
 import gradio as gr
 
 from webui.annotation_tab import build_annotation_tab
+from webui.data_root import build_data_root_panel
+from webui.dataset_version_tab import build_dataset_version_tab
 from webui.inference_tab import build_inference_tab
 from webui.training_tab import build_training_tab
-from webui.workspace import build_workspace_panel
 from webui_service import WebUIService
 
 
@@ -26,14 +27,16 @@ def create_ui(*, inference_only: bool = False) -> gr.Blocks:
             gr.Markdown("仅推理模式：数据集、图片标注和模型训练功能已关闭。")
             build_inference_tab(service)
         else:
-            workspace = build_workspace_panel(service)
+            data_root = build_data_root_panel()
             with gr.Tabs():
                 with gr.Tab("图片标注"):
-                    build_annotation_tab(service, workspace)
+                    build_annotation_tab(service, data_root, demo)
+                with gr.Tab("数据集版本"):
+                    build_dataset_version_tab(service, data_root)
                 with gr.Tab("图片推理"):
                     model_path, model_info = build_inference_tab(service)
                 with gr.Tab("模型训练"):
-                    build_training_tab(service, workspace, model_path, model_info)
+                    build_training_tab(service, data_root, model_path, model_info)
 
     return demo
 
@@ -128,21 +131,6 @@ _CSS = """
 #prediction-gallery .thumbnail-lg:hover::after,
 #prediction-gallery .thumbnail-lg.selected::after {
     border-color: var(--color-accent);
-}
-.workspace-status,
-.workspace-summary {
-    padding: 3px 6px;
-    overflow: visible !important;
-}
-.workspace-status p,
-.workspace-summary p {
-    margin: 0;
-    font-size: 13px;
-    opacity: 0.75;
-}
-#workspace-summary code {
-    font-size: 12px;
-    overflow-wrap: anywhere;
 }
 .status-text,
 .status-text p {

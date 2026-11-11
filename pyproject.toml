@@ -25,6 +25,7 @@ py-modules = [
   "annotation_storage",
   "classifier",
   "dataset",
+  "dataset_versioning",
   "decision",
   "evaluation",
   "image_io",

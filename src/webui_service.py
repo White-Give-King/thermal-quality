@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from classifier import (
     ARCHITECTURES,
     load_classifier,
 )
+from dataset_versioning import DatasetVersionStore
 from image_io import (
     IMAGE_SUFFIXES,
     ImageData,
@@ -215,24 +217,45 @@ def _validate_workspace_name(value: Any) -> str:
 
 
 def _validate_training_options(payload: dict[str, Any]) -> dict[str, Any]:
-    workspace_name = _validate_workspace_name(payload.get("workspace_name", ""))
-    if workspace_name:
+    dataset_root_value = str(payload.get("dataset_root", "")).strip()
+    workspace_name = (
+        ""
+        if dataset_root_value
+        else _validate_workspace_name(payload.get("workspace_name", ""))
+    )
+    if dataset_root_value:
+        data_root = Path(dataset_root_value).expanduser().resolve()
+        if not data_root.is_dir():
+            raise NotADirectoryError(f"data directory does not exist: {data_root}")
+        version_store = DatasetVersionStore(data_root, data_root)
+        database, image_root, dataset_version = version_store.active_paths()
+        output = data_root / "runs" / f"dataset-v{dataset_version:04d}"
+    elif workspace_name:
         workspace_root = Path(
             str(payload.get("workspace_root") or ROOT / "data")
         ).expanduser().resolve()
         workspace_dir = _find_workspace_dir(workspace_name, workspace_root)
         if workspace_dir is None:
             raise ValueError(f"workspace does not exist: {workspace_name}")
-        database = workspace_dir / ROI_DATABASE_FILENAME
         image_root = _workspace_output_dir(workspace_root, workspace_dir)
         output = image_root / "runs"
+        version_store = DatasetVersionStore(image_root, workspace_dir)
+        if version_store.initialized():
+            database, image_root, dataset_version = version_store.active_paths()
+            output = output / f"dataset-v{dataset_version:04d}"
+        else:
+            database = workspace_dir / ROI_DATABASE_FILENAME
     else:
         database = Path(str(payload.get("database", ""))).expanduser()
         image_root = Path(str(payload.get("image_root", database.parent))).expanduser()
         output = Path(str(payload.get("output", ""))).expanduser()
     if not database.is_file():
         raise ValueError(f"annotation database does not exist: {database}")
-    if not workspace_name and not str(payload.get("output", "")).strip():
+    if (
+        not workspace_name
+        and not dataset_root_value
+        and not str(payload.get("output", "")).strip()
+    ):
         raise ValueError("output directory is required")
     pretrained = payload.get("pretrained", True)
     if not isinstance(pretrained, bool):
@@ -273,6 +296,21 @@ def _validate_training_options(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _collect_annotation_images(input_dir: str | Path) -> list[Path]:
     return collect_image_paths(input_dir)
+
+
+def _data_source_images(data_root: Path) -> list[Path]:
+    """Collect original images under data/, excluding generated crops and runs."""
+    excluded = {"images", "runs", "dataset_versions"}
+    paths: set[Path] = set()
+    if _direct_image_count(data_root):
+        paths.update(_collect_annotation_images(data_root))
+    for child in sorted(data_root.iterdir(), key=lambda path: path.name.casefold()):
+        if child.name.casefold() in excluded:
+            continue
+        for candidate in _workspace_candidates(child):
+            image_dir = _workspace_image_dir(candidate)
+            paths.update(_collect_annotation_images(image_dir))
+    return sorted(paths, key=lambda path: str(path).casefold())
 
 
 def _workspace_image_dir(workspace: Path) -> Path:
@@ -435,7 +473,9 @@ def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, A
             except OSError:
                 continue
             metadata = _read_training_metadata(best.parent)
-            if best.parent.name == "runs" and best.parent != root:
+            if best.parent.name.startswith("dataset-v") and best.parent.parent.name == "runs":
+                workspace = best.parent.parent.parent.name
+            elif best.parent.name == "runs" and best.parent != root:
                 workspace = best.parent.parent.name
             else:
                 workspace = best.parent.name
@@ -444,6 +484,7 @@ def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, A
                     stat_result.st_mtime,
                     {
                         "path": str(best),
+                        "dataset": workspace,
                         "workspace": workspace,
                         "modified": datetime.fromtimestamp(
                             stat_result.st_mtime
@@ -470,6 +511,39 @@ class WebUIService:
         self._annotation_sessions: dict[str, dict[str, Any]] = {}
         self._annotation_lock = threading.RLock()
         self._annotation_claims: dict[tuple[str, str], tuple[str, float]] = {}
+        self._dataset_version_lock = threading.RLock()
+
+    @staticmethod
+    def _dataset_version_store(dataset_root: str | Path) -> DatasetVersionStore:
+        root = Path(dataset_root).expanduser().resolve()
+        if not root.is_dir():
+            raise NotADirectoryError(f"data directory does not exist: {root}")
+        return DatasetVersionStore(root, root)
+
+    def dataset_version_status(self, dataset_root: str | Path) -> dict[str, Any]:
+        with self._dataset_version_lock:
+            return self._dataset_version_store(dataset_root).status()
+
+    def import_labeled_dataset(
+        self,
+        dataset_root: str | Path,
+        files_by_label: Mapping[str, Sequence[str | Path]],
+    ) -> dict[str, Any]:
+        with self._dataset_version_lock:
+            store = self._dataset_version_store(dataset_root)
+            return store.import_labeled_images(
+                files_by_label,
+                config=load_config(self.config_path),
+                max_upload_bytes=MAX_UPLOAD_BYTES,
+            )
+
+    def activate_dataset_version(
+        self,
+        dataset_root: str | Path,
+        version: int,
+    ) -> dict[str, Any]:
+        with self._dataset_version_lock:
+            return self._dataset_version_store(dataset_root).activate(version)
 
     def list_workspaces(self, root_dir: str | Path) -> dict[str, Any]:
         root_text = str(root_dir).strip()
@@ -498,11 +572,12 @@ class WebUIService:
         return session
 
     def _annotation_labels(self, session: dict[str, Any]) -> dict[str, str]:
-        labels = {
+        labels = dict(session.get("baseline_labels", {}))
+        labels.update({
             _source_key(Path(row["source_path"])): row["label"]
             for row in load_image_annotations(session["roi_database_path"])
             if row["source_path"]
-        }
+        })
         session["labels"] = labels
         return labels
 
@@ -732,53 +807,70 @@ class WebUIService:
     def start_annotation(
         self,
         workspace_root: str | Path,
-        workspace_name: str,
+        workspace_name: str | None = None,
     ) -> dict[str, Any]:
         workspace_root = str(workspace_root).strip()
-        workspace_name = _validate_workspace_name(workspace_name)
-        if not workspace_root or not workspace_name:
-            raise ValueError("select a workspace")
+        if not workspace_root:
+            raise ValueError("data directory is required")
         config = load_config(self.config_path)
         root_path = Path(workspace_root).expanduser().resolve()
         if not root_path.is_dir():
-            raise NotADirectoryError(f"workspace root does not exist: {root_path}")
-        workspace_candidate = root_path / workspace_name
-        if not workspace_candidate.is_dir():
-            # 分部归组结构：在根目录的一级子文件夹中查找同名工作区。
-            matches = [
-                entry
-                for entry in root_path.iterdir()
-                if entry.is_dir()
-                and not entry.is_symlink()
-                and (entry / workspace_name).is_dir()
-            ]
-            if len(matches) > 1:
-                raise ValueError(
-                    f"workspace name is ambiguous under root: {workspace_name}"
-                )
-            if not matches:
+            raise NotADirectoryError(f"data directory does not exist: {root_path}")
+        is_data_root = workspace_name in (None, "data")
+        if is_data_root:
+            workspace_name = "data"
+            workspace_dir = root_path
+            image_dir = root_path
+            source_paths = _data_source_images(root_path)
+            output_path = root_path
+        else:
+            workspace_name = _validate_workspace_name(workspace_name)
+            workspace_candidate = root_path / workspace_name
+            if not workspace_candidate.is_dir():
+                # 分部归组结构：在根目录的一级子文件夹中查找同名工作区。
+                matches = [
+                    entry
+                    for entry in root_path.iterdir()
+                    if entry.is_dir()
+                    and not entry.is_symlink()
+                    and (entry / workspace_name).is_dir()
+                ]
+                if len(matches) > 1:
+                    raise ValueError(
+                        f"workspace name is ambiguous under root: {workspace_name}"
+                    )
+                if not matches:
+                    raise ValueError(f"workspace does not exist: {workspace_name}")
+                workspace_candidate = matches[0] / workspace_name
+            if workspace_candidate.is_symlink():
+                raise ValueError("workspace folder cannot be a symbolic link")
+            workspace_dir = workspace_candidate.resolve()
+            if (
+                workspace_dir.parent != root_path
+                and workspace_dir.parent.parent != root_path
+            ) or not workspace_dir.is_dir():
                 raise ValueError(f"workspace does not exist: {workspace_name}")
-            workspace_candidate = matches[0] / workspace_name
-        if workspace_candidate.is_symlink():
-            raise ValueError("workspace folder cannot be a symbolic link")
-        workspace_dir = workspace_candidate.resolve()
-        if (
-            workspace_dir.parent != root_path
-            and workspace_dir.parent.parent != root_path
-        ) or not workspace_dir.is_dir():
-            raise ValueError(f"workspace does not exist: {workspace_name}")
-        image_dir = _workspace_image_dir(workspace_dir)
-        source_paths = _collect_annotation_images(image_dir)
+            image_dir = _workspace_image_dir(workspace_dir)
+            source_paths = _collect_annotation_images(image_dir)
+            data_root = (ROOT / "data").resolve()
+            if workspace_dir.resolve().is_relative_to(data_root):
+                output_path = workspace_dir
+            else:
+                output_path = ROOT / "data" / workspace_name
         if not source_paths:
             raise ValueError(f"workspace contains no images: {workspace_name}")
-        data_root = (ROOT / "data").resolve()
-        if workspace_dir.resolve().is_relative_to(data_root):
-            # data/ 下的工作区：标注产物直接写入工作区文件夹。
-            output_path = workspace_dir
-        else:
-            output_path = ROOT / "data" / workspace_name
         output_path.mkdir(parents=True, exist_ok=True)
         roi_database_path = workspace_dir / ROI_DATABASE_FILENAME
+        baseline_labels: dict[str, str] = {}
+        if is_data_root:
+            baseline_database, _, _ = DatasetVersionStore(
+                root_path, root_path
+            ).active_paths()
+            baseline_labels = {
+                _source_key(Path(row["source_path"])): row["label"]
+                for row in load_image_annotations(baseline_database)
+                if row["source_path"]
+            }
         stored_rois = load_image_rois(roi_database_path)
         resolved_image_dir = image_dir.resolve()
         stored_rois_by_index: dict[int, ThermalBox] = {}
@@ -799,6 +891,7 @@ class WebUIService:
             "roi_database_path": roi_database_path,
             "config": config,
             "labels": labels,
+            "baseline_labels": baseline_labels,
             "claimed_index": None,
             "image_rois": stored_rois_by_index,
             "panels": {},

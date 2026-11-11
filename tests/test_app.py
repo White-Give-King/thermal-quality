@@ -71,15 +71,19 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
     assert page.status_code == 200
     assert "红外热图清晰度与对焦质量" in page.text
 
-    assert "数据集" not in {
+    component_labels = {
         item["props"].get("label") for item in demo.config["components"]
     }
+    assert "工作区子文件夹" not in component_labels
+    assert "数据集目录（当前基础数据集）" in component_labels
     assert {
-        "scan_workspaces",
         "begin_annotation",
         "next_unlabeled_annotation",
         "predict_images",
         "train",
+        "refresh_versions",
+        "import_dataset",
+        "rollback",
     } <= {item.get("api_name") for item in demo.config["dependencies"]}
 
 
@@ -258,44 +262,19 @@ def test_inference_api_documentation_describes_request_and_response() -> None:
     assert "错误列显示原因" in return_labels[2]
 
 
-def test_gradio_workspace_scan_callback_updates_workspace_fields(tmp_path, monkeypatch) -> None:
-    project_root = tmp_path / "project"
-    monkeypatch.setattr(webui_service, "ROOT", project_root)
-    source_root = tmp_path / "source"
-    other_dir = source_root / "CameraB"
-    image_dir = source_root / "A7-10-19"
-    other_dir.mkdir(parents=True)
-    image_dir.mkdir(parents=True)
-    (image_dir / "frame.png").write_bytes(b"image discovery only")
-    (other_dir / "frame.png").write_bytes(b"image discovery only")
-
-    callback = next(
-        item.fn for item in demo.fns.values() if item.fn.__name__ == "scan_workspaces"
-    )
-    records, dropdown, message, summary = callback(str(source_root))
-
-    assert [record["name"] for record in records] == ["CameraB", "A7-10-19"]
-    assert dropdown.choices == [("CameraB", "CameraB"), ("A7-10-19", "A7-10-19")]
-    assert dropdown.value == "A7-10-19"
-    assert "2 个工作区" in message
-    assert str(image_dir.resolve()) in summary
-    assert str((project_root / "data" / "A7-10-19").resolve()) in summary
-    assert str((image_dir / "annotations.sqlite3")) in summary
-
-
-def test_workspace_status_components_do_not_scroll() -> None:
-    components = {
-        item["props"].get("elem_id"): item
+def test_webui_uses_one_fixed_data_directory_without_workspace_picker() -> None:
+    labels = {
+        item["props"].get("label")
         for item in demo.config["components"]
-        if item["type"] == "markdown"
     }
 
-    assert components["workspace-message"]["props"]["elem_classes"] == ["workspace-status"]
-    assert components["workspace-summary"]["props"]["elem_classes"] == ["workspace-summary"]
-    assert ".workspace-status,\n.workspace-summary {" in demo.css
-    assert "overflow: visible !important;" in demo.css
-    assert "#workspace-summary code {" in demo.css
-    assert "overflow-wrap: anywhere;" in demo.css
+    assert "工作区根目录" not in labels
+    assert "工作区子文件夹" not in labels
+    assert "数据集目录（当前基础数据集）" in labels
+    assert any(
+        item.fn.__name__ == "begin_annotation"
+        for item in demo.fns.values()
+    )
 
 
 def test_gallery_selection_maps_visible_thumbnail_to_absolute_image() -> None:

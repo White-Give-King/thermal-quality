@@ -29,7 +29,7 @@ def list_models(service: WebUIService) -> list[dict[str, Any]]:
 def model_choices(service: WebUIService) -> list[tuple[str, str]]:
     return [
         (
-            f'{item["workspace"]} · {item["architecture"]} · {item["modified"]}',
+            f'{item["dataset"]} · {item["architecture"]} · {item["modified"]}',
             item["path"],
         )
         for item in list_models(service)
@@ -47,7 +47,7 @@ def describe_model(service: WebUIService, model_path: str | None) -> str:
     for item in list_models(service):
         if item["path"] == model_path:
             details = [
-                f"**工作区**：`{item['workspace']}`",
+                f"**数据集**：`{item['dataset']}`",
                 f"**架构**：`{item['architecture']}`",
             ]
             if item.get("modified"):

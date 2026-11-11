@@ -1,4 +1,4 @@
-"""「模型训练」标签页：基于所选工作区启动后台训练。"""
+"""「模型训练」标签页：基于 data/ 当前生效版本启动后台训练。"""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ import time
 import gradio as gr
 
 from webui.inference_tab import describe_model, model_choices
-from webui.workspace import WorkspacePanel
+from webui.data_root import DataRootPanel
 from webui_service import WebUIService
 
 
 def build_training_tab(
     service: WebUIService,
-    workspace: WorkspacePanel,
+    data_root: DataRootPanel,
     model_path: gr.Dropdown,
     model_info: gr.Markdown,
 ) -> None:
     gr.Markdown(
-        "自动读取上方所选工作区 `annotations.sqlite3` 中的标注进行训练，模型输出到该工作区的 `runs/` 子目录。"
+        "训练始终读取上方 `data/` 数据集目录的当前生效版本；模型输出到 `data/runs/dataset-vNNNN/`。"
         "默认使用预训练 MobileNetV3-Large、30 轮、batch 16、输入 224、学习率 0.0001；"
         "这是适合当前小数据集的推荐起点，不代表已通过超参数搜索验证为最优。",
         elem_classes=["tab-hint"],
@@ -96,7 +96,6 @@ def build_training_tab(
 
     def train(
         root: str,
-        name: str,
         epoch_count: float,
         model_architecture: str,
         batch: float,
@@ -107,13 +106,10 @@ def build_training_tab(
         resume: str,
         pretrained: bool,
     ):
-        if not name:
-            raise gr.Error("请先扫描并选择工作区。")
         try:
             started = service.start_training(
                 {
-                    "workspace_root": root,
-                    "workspace_name": name,
+                    "dataset_root": root,
                     "epochs": int(epoch_count),
                     "architecture": model_architecture,
                     "batch_size": int(batch),
@@ -153,8 +149,7 @@ def build_training_tab(
     train_button.click(
         train,
         inputs=[
-            workspace.root,
-            workspace.select,
+            data_root.root,
             epochs,
             architecture,
             batch_size,
