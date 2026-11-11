@@ -32,7 +32,6 @@ from classifier import (
     ARCHITECTURES,
     load_classifier,
 )
-from decision import STATUS_LABELS_ZH
 from image_io import (
     IMAGE_SUFFIXES,
     ImageData,
@@ -1072,12 +1071,14 @@ class WebUIService:
                     continue
                 prediction, thermal_image, thermal_box = outcome
                 try:
+                    probabilities = prediction.get("probabilities")
+                    label = str(prediction["status"])
+                    if isinstance(probabilities, dict) and probabilities:
+                        label = f"{label} {max(probabilities.values()):.1%}"
                     annotated = render_annotated_image(
                         image_data.image,
                         thermal_box,
-                        label=str(
-                            prediction.get("label_zh", STATUS_LABELS_ZH["uncertain"])
-                        ),
+                        label=label,
                         status=str(prediction["status"]),
                     )
                     results[index] = {

@@ -131,13 +131,13 @@ def build_inference_tab(
             elem_classes=["status-text"],
         )
     gr.Markdown(
-        "每张成功处理的图片仅显示带热区框的原图。",
+        "预览图标注推理类别与最高概率；图库标题显示中文类别及各类别概率。",
         elem_classes=["tab-hint"],
     )
     prediction_gallery = gr.Gallery(
         label=(
-            "推理预览图库（每张成功图片仅展示带热区框的原图；"
-            "标题含文件名及预测类别；失败图片不展示）"
+            "推理预览图库（图片标注类别和最高概率；标题含中文类别及各类别概率；"
+            "失败图片不展示）"
         ),
         columns=1,
         object_fit="cover",
@@ -206,11 +206,27 @@ def build_inference_tab(
                 }
             )
             if item.get("annotated_image") is not None:
-                label = item["prediction"].get("label_zh", item["prediction"]["status"])
+                prediction = item["prediction"]
+                label = prediction.get("label_zh", prediction["status"])
+                probabilities = prediction.get("probabilities")
+                probability_details = (
+                    " · ".join(
+                        f"{class_name} {probabilities[class_name] * 100:.1f}%"
+                        for class_name in LABELS
+                        if class_name in probabilities
+                    )
+                    if isinstance(probabilities, dict)
+                    else ""
+                )
+                caption = (
+                    f'{item["filename"]}: {label} ({prediction["status"]})'
+                )
+                if probability_details:
+                    caption = f"{caption} · {probability_details}"
                 previews.append(
                     (
                         item["annotated_image"],
-                        f'{item["filename"]}: 原图热区框 — {label}',
+                        caption,
                     )
                 )
         success_count = sum("prediction" in item for item in public_results)

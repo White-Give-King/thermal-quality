@@ -40,7 +40,7 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     assert create_demo_options == {"inference_only": False}
     assert launched_demo.launch_kwargs == {
         "server_name": "0.0.0.0",
-        "server_port": 7860,
+        "server_port": 80,
         "show_error": True,
         "css": "test-css",
         "head": "test-head",
@@ -114,18 +114,29 @@ def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
     ]
 
 
-def test_inference_gallery_shows_only_annotated_originals_in_single_column() -> None:
+def test_inference_gallery_explains_result_annotations() -> None:
     gallery = next(
         item["props"]
         for item in demo.config["components"]
         if item["props"].get("elem_id") == "prediction-gallery"
     )
 
-    assert gallery["columns"] in (1, [1])
-    assert gallery["height"] == 400
-    assert gallery["allow_preview"] is False
-    assert "仅展示带热区框的原图" in gallery["label"]
-    assert "热区裁剪图" not in gallery["label"]
+    assert "类别和最高概率" in gallery["label"]
+    assert "各类别概率" in gallery["label"]
+    assert "失败图片不展示" in gallery["label"]
+
+
+def test_prediction_gallery_hover_frame_covers_full_thumbnail() -> None:
+    css = demo.css
+
+    assert "#prediction-gallery .grid-wrap {" in css
+    assert "padding-left: 0 !important;" in css
+    assert "padding-right: 0 !important;" in css
+    assert "#prediction-gallery .thumbnail-lg::after {" in css
+    assert "inset: 0;" in css
+    assert "pointer-events: none;" in css
+    assert "#prediction-gallery .thumbnail-lg:hover::after" in css
+    assert "#prediction-gallery .thumbnail-lg.selected::after" in css
 
 
 def test_inference_button_is_enabled_only_when_images_are_uploaded() -> None:
@@ -181,7 +192,9 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
     ]
     assert len(previews) == 1
     assert previews[0][0] is annotated_image
-    assert previews[0][1] == "frame.png: 原图热区框 — 临界"
+    assert previews[0][1] == (
+        "frame.png: 临界 (borderline) · sharp 10.0% · borderline 70.0% · defocused 20.0%"
+    )
 
 
 def test_training_controls_use_recommended_defaults() -> None:
@@ -237,8 +250,8 @@ def test_inference_api_documentation_describes_request_and_response() -> None:
     return_labels = [item["label"] for item in endpoint["returns"]]
     assert "成功获得推理结果数 / 输入图片总数" in return_labels[0]
     assert "例如：完成：2/3 张图片获得推理结果" in return_labels[0]
-    assert "仅展示带热区框的原图" in return_labels[1]
-    assert "热区裁剪图" not in return_labels[1]
+    assert "类别和最高概率" in return_labels[1]
+    assert "各类别概率" in return_labels[1]
     assert "失败图片不展示" in return_labels[1]
     assert "sharp/borderline/defocused/uncertain" in return_labels[2]
     assert "softmax 概率百分比〔未校准〕" in return_labels[2]

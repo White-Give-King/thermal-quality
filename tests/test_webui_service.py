@@ -325,6 +325,18 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
             )
 
     predictor = SharpPredictor()
+    rendered_labels = []
+    render_annotated_image = webui_service.render_annotated_image
+
+    def capture_rendered_label(image, thermal_box, *, label, status):
+        rendered_labels.append(label)
+        return render_annotated_image(
+            image, thermal_box, label=label, status=status
+        )
+
+    monkeypatch.setattr(
+        webui_service, "render_annotated_image", capture_rendered_label
+    )
     config = tmp_path / "config.yaml"
     config.write_text(
         "image:\n"
@@ -377,6 +389,9 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
     result = response["results"][0]
     assert result["prediction"]["status"] == "sharp"
     assert result["prediction"]["model_version"] == "test-model"
+    assert rendered_labels[0] == (
+        f"sharp {max(result['prediction']['probabilities'].values()):.1%}"
+    )
     for key in ("annotated_image", "thermal_image"):
         preview = result[key]
         assert isinstance(preview, np.ndarray)

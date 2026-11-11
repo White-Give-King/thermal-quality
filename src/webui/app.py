@@ -91,7 +91,9 @@ _CSS = """
 }
 #prediction-gallery .grid-wrap {
     height: 100% !important;
+    padding-left: 0 !important;
     padding-top: 0 !important;
+    padding-right: 0 !important;
     padding-bottom: 0 !important;
     overflow-y: auto !important;
     scroll-snap-type: y mandatory;
@@ -102,15 +104,30 @@ _CSS = """
 }
 #prediction-gallery .gallery-item,
 #prediction-gallery .thumbnail-lg {
+    width: 100% !important;
     height: 100% !important;
     min-height: 0 !important;
     aspect-ratio: auto !important;
+    box-sizing: border-box !important;
     scroll-snap-align: start;
     scroll-snap-stop: always;
 }
 #prediction-gallery .thumbnail-lg {
     border-top: 0 !important;
     border-bottom: 0 !important;
+}
+#prediction-gallery .thumbnail-lg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    pointer-events: none;
+}
+#prediction-gallery .thumbnail-lg:hover::after,
+#prediction-gallery .thumbnail-lg.selected::after {
+    border-color: var(--color-accent);
 }
 .workspace-status,
 .workspace-summary {
