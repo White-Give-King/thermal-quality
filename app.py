@@ -16,8 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--port",
         type=int,
-        default=80,
-        help="port for the Gradio server (default: 80)",
+        default=7860,
+        help="port for the local Gradio server (default: 7860)",
     )
     return parser
 
@@ -27,7 +27,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     demo = create_demo(inference_only=args.inference_only)
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=args.port,
         show_error=True,
         css=demo.css,

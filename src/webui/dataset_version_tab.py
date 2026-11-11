@@ -127,6 +127,7 @@ def build_dataset_version_tab(
         refresh_versions,
         inputs=data_root.root,
         outputs=[version_select, version_status],
+        api_name=False,
     )
     import_button.click(
         import_dataset,
@@ -136,6 +137,7 @@ def build_dataset_version_tab(
             borderline_files,
             defocused_files,
         ],
+        api_name=False,
         outputs=[
             version_select,
             version_status,
@@ -148,4 +150,5 @@ def build_dataset_version_tab(
         rollback,
         inputs=[data_root.root, version_select],
         outputs=[version_select, version_status],
+        api_name=False,
     )

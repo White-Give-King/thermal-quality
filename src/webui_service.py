@@ -643,6 +643,38 @@ class WebUIService:
         height, width = self._image_at(session, session["index"]).shape[:2]
         return width, height
 
+    def annotation_status(self, session_id: str) -> dict[str, Any]:
+        session = self.get_annotation_session(session_id)
+        index = session["index"]
+        source = session["paths"][index]
+        with self._annotation_lock:
+            labels = self._annotation_labels(session)
+            claim_owner = self._active_annotation_claim(
+                self._annotation_claim_key(session, index)
+            )
+            claimed_by_other = (
+                claim_owner is not None and claim_owner != session_id
+            )
+        image = self._image_at(session, index)
+        roi = self._roi_for_image(session, index)
+        return {
+            "session_id": session_id,
+            "index": index + 1,
+            "total": len(session["paths"]),
+            "filename": source.name,
+            "image_path": str(source),
+            "label": labels.get(_source_key(source)),
+            "claimed_by_other": claimed_by_other,
+            "labeled_count": len(labels),
+            "roi": {
+                "x": int(roi[0]),
+                "y": int(roi[1]),
+                "width": int(roi[2]),
+                "height": int(roi[3]),
+            },
+            "image_size": {"width": int(image.shape[1]), "height": int(image.shape[0])},
+        }
+
     def _image_at(self, session: dict[str, Any], index: int) -> np.ndarray:
         """Decode the original image; only the current image is kept in memory."""
         cached = session["full_image"]

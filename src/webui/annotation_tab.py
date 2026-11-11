@@ -269,6 +269,7 @@ def build_annotation_tab(
             *annotation_view_outputs,
             *annotation_buttons,
         ],
+        api_name=False,
     )
 
     def navigate_annotation(
@@ -288,6 +289,7 @@ def build_annotation_tab(
         ),
         inputs=[annotation_session, annotation_index, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
 
     def next_annotation(
@@ -301,6 +303,7 @@ def build_annotation_tab(
         next_annotation,
         inputs=[annotation_session, annotation_index, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
 
     def next_unlabeled_annotation(
@@ -321,6 +324,7 @@ def build_annotation_tab(
         next_unlabeled_annotation,
         inputs=[annotation_session, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
 
     def _select_neighbour(
@@ -341,11 +345,13 @@ def build_annotation_tab(
         _select_neighbour,
         inputs=[annotation_session, gallery_indices_state, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
     annotation_index.submit(
         navigate_annotation,
         inputs=[annotation_session, annotation_index, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
     original_view.change(
         lambda session, original: _annotation_outputs(service, session, original=original)
@@ -353,6 +359,7 @@ def build_annotation_tab(
         else _no_session_annotation,
         inputs=[annotation_session, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
 
     def label_image(
@@ -370,6 +377,7 @@ def build_annotation_tab(
         lambda session, original: label_image(session, "sharp", original),
         inputs=[annotation_session, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
     quick_borderline.click(
         lambda session, original: label_image(
@@ -377,6 +385,7 @@ def build_annotation_tab(
         ),
         inputs=[annotation_session, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
     quick_defocused.click(
         lambda session, original: label_image(
@@ -384,6 +393,7 @@ def build_annotation_tab(
         ),
         inputs=[annotation_session, original_view],
         outputs=annotation_view_outputs,
+        api_name=False,
     )
 
     def update_roi(
@@ -439,6 +449,7 @@ def build_annotation_tab(
             constrain_roi_inputs,
             inputs=roi_inputs[:5],
             outputs=[roi_x, roi_y, roi_width, roi_height],
+            api_name=False,
         )
     apply_roi.click(
         lambda session, x, y, width, height, original: update_roi(
@@ -446,6 +457,7 @@ def build_annotation_tab(
         ),
         inputs=roi_inputs,
         outputs=[*annotation_view_outputs, roi_message],
+        api_name=False,
     )
     save_roi.click(
         lambda session, x, y, width, height, original: update_roi(
@@ -453,4 +465,5 @@ def build_annotation_tab(
         ),
         inputs=roi_inputs,
         outputs=[*annotation_view_outputs, roi_message],
+        api_name=False,
     )

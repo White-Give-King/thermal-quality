@@ -8,43 +8,34 @@ import gradio as gr
 import numpy as np
 
 from decision import LABELS
+from webui.api_docs import describe_api_component
 from webui_service import WebUIService
 
 
-def _set_api_parameter_description(component: Any, description: str) -> None:
-    api_info_as_input = component.api_info_as_input
-    component.api_info_as_input = lambda: {
-        **api_info_as_input(),
-        "additional_description": description,
-    }
-
-
 def list_models(service: WebUIService) -> list[dict[str, Any]]:
-    try:
-        return service.list_models()["models"]
-    except (OSError, ValueError, RuntimeError):
-        return []
+    return service.list_models()["models"]
 
 
-def model_choices(service: WebUIService) -> list[tuple[str, str]]:
+def model_choices(models: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return [
         (
             f'{item["dataset"]} · {item["architecture"]} · {item["modified"]}',
             item["path"],
         )
-        for item in list_models(service)
+        for item in models
     ]
 
 
-def default_model_path(service: WebUIService) -> str | None:
-    models = list_models(service)
+def default_model_path(models: list[dict[str, Any]]) -> str | None:
     return models[0]["path"] if models else None
 
 
-def describe_model(service: WebUIService, model_path: str | None) -> str:
+def describe_model(
+    models: list[dict[str, Any]], model_path: str | None
+) -> str:
     if not model_path:
         return "未发现已训练模型；请先在「模型训练」页训练，或直接粘贴权重路径。"
-    for item in list_models(service):
+    for item in models:
         if item["path"] == model_path:
             details = [
                 f"**数据集**：`{item['dataset']}`",
@@ -65,7 +56,8 @@ def build_inference_tab(
         "选择模型与本地图片，支持多选批量推理。低于配置置信度阈值时显示「无法确定」。",
         elem_classes=["tab-hint"],
     )
-    initial_model = default_model_path(service)
+    models = list_models(service)
+    initial_model = default_model_path(models)
     with gr.Row():
         model_path = gr.Dropdown(
             label="选择模型（runs 目录下已训练权重，可输入自定义路径）",
@@ -74,14 +66,15 @@ def build_inference_tab(
                 "图片最大边长 12000 px，置信度阈值 0.45；模型输入尺寸优先读取权重元数据，"
                 "未记录时默认 224。修改 configs/default.yaml 或模型后，以实际配置和权重元数据为准。"
             ),
-            choices=model_choices(service),
+            choices=model_choices(models),
             value=initial_model,
             allow_custom_value=True,
             scale=4,
         )
-        _set_api_parameter_description(
+        describe_api_component(
             model_path,
             "已训练的 .pt 分类器权重文件路径。文件必须存在，并包含本项目支持的三类模型权重。",
+            input_info={"type": "string"},
         )
         refresh_models_button = gr.Button("刷新模型列表", scale=0, min_width=130)
         prediction_device = gr.Dropdown(
@@ -92,12 +85,12 @@ def build_inference_tab(
             scale=1,
             min_width=110,
         )
-        _set_api_parameter_description(
+        describe_api_component(
             prediction_device,
             "推理设备：auto、cuda 或 cpu。auto 在 CUDA 可用时选择 CUDA，否则使用 CPU；"
             "选择 cuda 时要求当前环境支持 CUDA。",
         )
-    model_info = gr.Markdown(describe_model(service, initial_model))
+    model_info = gr.Markdown(describe_model(models, initial_model))
     gr.Markdown(
         "上传一张或多张图片；单张图片最大 40 MiB。",
         elem_classes=["tab-hint"],
@@ -109,7 +102,7 @@ def build_inference_tab(
         type="filepath",
         height=168,
     )
-    _set_api_parameter_description(
+    describe_api_component(
         prediction_files,
         "图片文件列表。支持 PNG、JPG/JPEG、BMP、TIF/TIFF；每张图片最大 40 MiB，"
         "宽或高不能超过配置上限（默认 12000 px）。",
@@ -130,6 +123,10 @@ def build_inference_tab(
             ),
             elem_classes=["status-text"],
         )
+        describe_api_component(
+            prediction_message,
+            "推理处理状态和成功获得推理结果的图片数 / 输入图片总数。",
+        )
     gr.Markdown(
         "预览图标注推理类别与最高概率；图库标题显示中文类别及各类别概率。",
         elem_classes=["tab-hint"],
@@ -146,6 +143,10 @@ def build_inference_tab(
         height=400,
         elem_id="prediction-gallery",
     )
+    describe_api_component(
+        prediction_gallery,
+        "成功推理图片的标注预览，包含预测类别、最高概率和各类别概率；失败图片不展示。",
+    )
     gr.Markdown(
         "每张图片一行，显示预测类别、各类别概率或错误。",
         elem_classes=["tab-hint"],
@@ -161,23 +162,33 @@ def build_inference_tab(
         interactive=False,
         wrap=True,
     )
+    describe_api_component(
+        prediction_results,
+        "逐图片推理结果表；概率为未校准的 softmax 百分比，失败时显示错误原因。",
+    )
     def refresh_model_dropdown() -> tuple[Any, str]:
-        choices = model_choices(service)
+        models = list_models(service)
+        choices = model_choices(models)
         value = choices[0][1] if choices else None
-        return gr.Dropdown(choices=choices, value=value), describe_model(service, value)
+        return (
+            gr.Dropdown(choices=choices, value=value),
+            describe_model(models, value),
+        )
 
     def describe_selected_model(model: str) -> str:
-        return describe_model(service, model)
+        return describe_model(list_models(service), model)
 
     refresh_models_button.click(
         refresh_model_dropdown,
         inputs=[],
         outputs=[model_path, model_info],
+        api_name=False,
     )
     model_path.change(
         describe_selected_model,
         inputs=[model_path],
         outputs=[model_info],
+        api_name=False,
     )
 
     def update_predict_button(files: list[str] | None) -> Any:
@@ -187,6 +198,7 @@ def build_inference_tab(
         update_predict_button,
         inputs=[prediction_files],
         outputs=[predict_button],
+        api_name=False,
     )
 
     def predict_images(

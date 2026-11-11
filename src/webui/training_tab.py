@@ -6,8 +6,8 @@ import time
 
 import gradio as gr
 
-from webui.inference_tab import describe_model, model_choices
 from webui.data_root import DataRootPanel
+from webui.inference_tab import describe_model, list_models, model_choices
 from webui_service import WebUIService
 
 
@@ -93,7 +93,6 @@ def build_training_tab(
         max_lines=12,
         wrap_lines=True,
     )
-
     def train(
         root: str,
         epoch_count: float,
@@ -136,14 +135,15 @@ def build_training_tab(
                 break
             time.sleep(2)
         if status["return_code"] == 0:
-            choices = model_choices(service)
+            models = list_models(service)
+            choices = model_choices(models)
             if choices:
                 value = choices[0][1]
                 yield (
                     "训练完成（返回码 0），已刷新模型列表并选中最新模型。",
                     status.get("log", ""),
                     gr.Dropdown(choices=choices, value=value),
-                    describe_model(service, value),
+                    describe_model(models, value),
                 )
 
     train_button.click(
@@ -161,4 +161,5 @@ def build_training_tab(
             use_pretrained,
         ],
         outputs=[training_message, training_log, model_path, model_info],
+        api_name=False,
     )

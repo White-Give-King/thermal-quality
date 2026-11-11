@@ -120,20 +120,22 @@ python -m pip install -e ".[ui]"
 gradio app.py
 ```
 
-默认启动完整界面，端口为 `7860`。自定义端口时可使用 `gradio app.py -- --port 8080`（或 `python app.py --port 8080`）；若只需图片推理，可组合参数：`gradio app.py -- --inference-only --port 8080`。`--` 后的参数会传给应用脚本；推理模式不显示数据集、标注和训练功能。
+默认启动完整界面，绑定本机 `127.0.0.1:7860`。自定义端口时可使用 `gradio app.py -- --port 8080`（或 `python app.py --port 8080`）；若只需图片推理，可组合参数：`gradio app.py -- --inference-only --port 8080`。`--` 后的参数会传给应用脚本；推理模式不显示数据集、标注和训练功能。
 
 Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `thermal-quality` Conda 环境并启动本地 Gradio 服务。如果 Gradio 已在 7860 端口运行，脚本会复用现有服务并打开浏览器，不会重复启动；若端口被其他程序占用，会显示占用进程信息。关闭运行中的服务窗口即可停止服务。
 
-打开 `http://127.0.0.1:7860`，或在局域网其他设备上打开 `http://<主机IP>:7860`：
+打开 `http://127.0.0.1:7860`：
 
 - **图片推理**：选择本地训练得到的 `.pt` 权重、CPU/CUDA 和一张或多张图片；页面显示分类状态、各类别概率、原图热区预览和热区裁剪图。推理会先检测热图黑边并裁掉，未检测到有效黑边时使用默认配置热区；多张图片会并发准备热区，并按最多 16 张一批运行模型推理。低于配置的置信度阈值时显示“无法确定”。坏图会单独显示错误，不会被当作模型结果。
 - **图片标注**：载入固定的 `data/` 数据集目录，浏览原始图片并标注三类；标注结果写入 `data/annotations.sqlite3`。图片按需读取，多个页面共享未标注队列。
 - **数据集版本**：`data/` 当前内容初始化为 v1；分别上传清晰、临界、模糊类别图片，一次提交按当前热区配置裁剪图片、合并新增标注并创建新版本。版本快照和共享图片保存在 `data/dataset_versions/`。回档仅切换当前生效版本，不删除历史版本；之后导入仍继续递增版本号。
 - **模型训练**：始终读取 `data/` 当前生效版本，模型输出到 `data/runs/dataset-vNNNN/`。可选择模型架构（MobileNetV3-Small/Large、EfficientNet-B0、ResNet18）、epoch、batch size、输入尺寸、学习率和设备。训练以本机后台任务运行，可查看状态和日志；回档数据集不会自动切换推理模型。
 - WebUI 标注数据库和模型均保存在 `data/` 下；训练数据来自当前生效的数据集版本。数据库必须包含三类足够样本；否则训练脚本会给出失败日志。
-- “下载预训练权重”默认关闭，勾选后需要网络。Gradio 界面单次只运行一个训练任务。
+- “下载预训练权重”默认开启，首次下载需要网络；取消勾选则从随机初始化开始。Gradio 界面单次只运行一个训练任务。
 
-Gradio 界面只绑定在本机 `127.0.0.1`，不要直接暴露到局域网或公网；界面允许启动本机训练进程并读取用户指定路径的文件。命令行 `scripts/predict.py` 与训练脚本仍可独立使用。
+除页面内部同步事件外，Gradio API 文档还提供具名业务接口：`/predict_images`、`/list_models`；数据集版本的 `/dataset_version_status`、`/import_labeled_dataset`、`/activate_dataset_version`；标注的 `/start_annotation`、`/annotation_status`、`/navigate_annotation`、`/claim_next_unlabeled`、`/save_annotation`、`/update_annotation_roi`；以及训练的 `/start_training`、`/training_status`。标注接口通过会话 ID 关联操作，图片序号从 1 开始；导入接口按类别分别接收图片文件；训练启动接口返回任务 ID，再用状态接口轮询进度。图片推理的模型参数接受任意权重路径，不限于模型下拉框初始选项。
+
+通过 `gradio_client` 调用时，使用 `Client("http://127.0.0.1:7860")`，并按 API 文档中的示例传递参数和 `api_name`。服务只绑定本机回环地址，不向局域网或公网开放；界面和 API 均允许启动本机训练进程并读取用户指定路径的文件。命令行 `scripts/predict.py` 与训练脚本仍可独立使用。
 
 ### 命令行推理
 

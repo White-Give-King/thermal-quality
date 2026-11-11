@@ -39,8 +39,8 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     assert app_entrypoint.demo is launched_demo
     assert create_demo_options == {"inference_only": False}
     assert launched_demo.launch_kwargs == {
-        "server_name": "0.0.0.0",
-        "server_port": 80,
+        "server_name": "127.0.0.1",
+        "server_port": 7860,
         "show_error": True,
         "css": "test-css",
         "head": "test-head",
@@ -77,14 +77,20 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
     assert "工作区子文件夹" not in component_labels
     assert "数据集目录（当前基础数据集）" in component_labels
     assert {
-        "begin_annotation",
-        "next_unlabeled_annotation",
-        "predict_images",
-        "train",
-        "refresh_versions",
-        "import_dataset",
-        "rollback",
-    } <= {item.get("api_name") for item in demo.config["dependencies"]}
+        "/activate_dataset_version",
+        "/annotation_status",
+        "/claim_next_unlabeled",
+        "/dataset_version_status",
+        "/import_labeled_dataset",
+        "/list_models",
+        "/navigate_annotation",
+        "/predict_images",
+        "/save_annotation",
+        "/start_annotation",
+        "/start_training",
+        "/training_status",
+        "/update_annotation_roi",
+    } == set(demo.get_api_info()["named_endpoints"])
 
 
 def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
@@ -262,6 +268,66 @@ def test_inference_api_documentation_describes_request_and_response() -> None:
     assert "错误列显示原因" in return_labels[2]
 
 
+def test_business_apis_are_named_and_page_events_are_not_published() -> None:
+    named_endpoints = demo.get_api_info()["named_endpoints"]
+
+    assert {
+        "/activate_dataset_version",
+        "/annotation_status",
+        "/claim_next_unlabeled",
+        "/dataset_version_status",
+        "/import_labeled_dataset",
+        "/list_models",
+        "/navigate_annotation",
+        "/predict_images",
+        "/save_annotation",
+        "/start_annotation",
+        "/start_training",
+        "/training_status",
+        "/update_annotation_roi",
+    } == set(named_endpoints)
+
+    prediction = named_endpoints["/predict_images"]
+    assert len(prediction["parameters"]) == 3
+    assert len(prediction["returns"]) == 3
+    assert all(
+        parameter["python_type"]["description"]
+        for parameter in prediction["parameters"]
+    )
+    assert all(result["label"] for result in prediction["returns"])
+    assert all(
+        result["type"]
+        for endpoint in named_endpoints.values()
+        for result in endpoint["returns"]
+    )
+    model_parameter = next(
+        item for item in prediction["parameters"] if item["parameter_name"] == "model"
+    )
+    assert model_parameter["python_type"]["type"] == "str"
+    assert "enum" not in model_parameter["type"]
+    annotation_response = named_endpoints["/start_annotation"]["returns"][0]["type"]
+    assert "session_id" in annotation_response["properties"]
+    assert "current" in annotation_response["properties"]
+    import_parameters = named_endpoints["/import_labeled_dataset"]["parameters"]
+    assert [
+        item["parameter_name"] for item in import_parameters
+    ] == [
+        "dataset_root",
+        "sharp_files",
+        "borderline_files",
+        "defocused_files",
+    ]
+
+
+def test_inference_only_ui_publishes_only_inference_and_model_listing() -> None:
+    inference_demo = create_demo(inference_only=True)
+
+    assert set(inference_demo.get_api_info()["named_endpoints"]) == {
+        "/list_models",
+        "/predict_images",
+    }
+
+
 def test_webui_uses_one_fixed_data_directory_without_workspace_picker() -> None:
     labels = {
         item["props"].get("label")
@@ -367,6 +433,13 @@ def test_roi_input_limits_follow_image_edges_and_clamp_values() -> None:
     assert all(len(callback.outputs) == 4 for callback in callbacks)
 
 
+def test_roi_input_validation_callbacks_are_not_public_endpoints() -> None:
+    endpoints = demo.get_api_info()["named_endpoints"]
+
+    assert "/predict_images" in endpoints
+    assert not any("constrain_roi_inputs" in endpoint for endpoint in endpoints)
+
+
 def test_roi_coordinate_accepts_values_beyond_a_previous_image_bound() -> None:
     roi_y = next(
         component
@@ -437,25 +510,18 @@ def test_annotation_image_actions_keep_original_view_checkbox_state() -> None:
         if item["type"] == "checkbox"
         and item.get("props", {}).get("label") == "显示原图与热区框"
     )
-    # Annotation-area dependencies: 4 named + 7 lambdas = 11 total
-    annotation_names = {
-        "begin_annotation",
-        "next_annotation",
-        "_select_neighbour",
-        "navigate_annotation",
-        "lambda",
-        "lambda_1",
-        "lambda_2",
-        "lambda_3",
-        "lambda_4",
-        "lambda_5",
-        "lambda_6",
-    }
+    gallery = next(
+        item["id"]
+        for item in components.values()
+        if item["type"] == "gallery"
+        and item.get("props", {}).get("elem_id") == "annotation-gallery"
+    )
     annotation_actions = [
-        dep for dep in demo.config["dependencies"]
-        if dep.get("api_name") in annotation_names
+        dependency
+        for dependency in demo.config["dependencies"]
+        if gallery in dependency["outputs"]
     ]
-    assert len(annotation_actions) == len(annotation_names)
+    assert annotation_actions
     assert all(original_view in dep["inputs"] for dep in annotation_actions)
 
 

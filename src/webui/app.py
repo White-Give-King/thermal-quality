@@ -8,6 +8,7 @@ from webui.annotation_tab import build_annotation_tab
 from webui.data_root import build_data_root_panel
 from webui.dataset_version_tab import build_dataset_version_tab
 from webui.inference_tab import build_inference_tab
+from webui.public_api import register_public_apis
 from webui.training_tab import build_training_tab
 from webui_service import WebUIService
 
@@ -37,6 +38,8 @@ def create_ui(*, inference_only: bool = False) -> gr.Blocks:
                     model_path, model_info = build_inference_tab(service)
                 with gr.Tab("模型训练"):
                     build_training_tab(service, data_root, model_path, model_info)
+
+        register_public_apis(service, include_management=not inference_only)
 
     return demo
 

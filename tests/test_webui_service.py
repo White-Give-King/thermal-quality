@@ -443,6 +443,13 @@ def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch
     )
     assert current["total"] == 2
     assert current["index"] == 0
+    status = service.annotation_status(session_id)
+    assert status["index"] == 1
+    assert status["total"] == 2
+    assert status["filename"] == "frame-1.png"
+    assert status["image_path"] == str((input_dir / "frame-1.png").resolve())
+    assert status["image_size"] == {"width": 64, "height": 64}
+    assert status["roi"] == current["roi"]
     preview = current["preview"]
     assert isinstance(preview, np.ndarray)
     assert preview.shape[2] == 3
