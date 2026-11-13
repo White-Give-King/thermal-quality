@@ -9,9 +9,14 @@ from webui.app import create_demo
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--inference-only",
+        "--enable-annotation",
         action="store_true",
-        help="start only the image inference interface",
+        help="enable the image annotation page and annotation APIs",
+    )
+    parser.add_argument(
+        "--enable-training",
+        action="store_true",
+        help="enable the model training page and manual training API",
     )
     parser.add_argument(
         "--port",
@@ -25,7 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     global demo
     args = build_parser().parse_args(argv)
-    demo = create_demo(inference_only=args.inference_only)
+    demo = create_demo(
+        enable_annotation=args.enable_annotation,
+        enable_training=args.enable_training,
+    )
     demo.launch(
         server_name="127.0.0.1",
         server_port=args.port,

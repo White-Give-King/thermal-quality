@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gradio as gr
 from fastapi.testclient import TestClient
 from gradio.routes import App
 
@@ -10,7 +11,9 @@ from webui.annotation_tab import (
     _roi_input_updates,
     _selected_gallery_index,
 )
-from webui.app import create_demo, demo
+from webui.app import create_demo, create_ui
+
+demo = create_demo(enable_annotation=True, enable_training=True)
 
 
 def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
@@ -24,8 +27,9 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     launched_demo = FakeDemo()
     create_demo_options = {}
 
-    def fake_create_demo(*, inference_only=False):
-        create_demo_options["inference_only"] = inference_only
+    def fake_create_demo(*, enable_training=False, enable_annotation=False):
+        create_demo_options["enable_training"] = enable_training
+        create_demo_options["enable_annotation"] = enable_annotation
         return launched_demo
 
     monkeypatch.setattr(
@@ -37,7 +41,7 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     app_entrypoint.main([])
 
     assert app_entrypoint.demo is launched_demo
-    assert create_demo_options == {"inference_only": False}
+    assert create_demo_options == {"enable_training": False, "enable_annotation": False}
     assert launched_demo.launch_kwargs == {
         "server_name": "127.0.0.1",
         "server_port": 7860,
@@ -64,6 +68,61 @@ def test_main_accepts_custom_port(monkeypatch) -> None:
     assert launched_demo.launch_kwargs["server_port"] == 8080
 
 
+def test_annotation_page_and_apis_require_startup_flag() -> None:
+    annotation_apis = {
+        "/start_annotation", "/annotation_status", "/navigate_annotation",
+        "/claim_next_unlabeled", "/save_annotation", "/update_annotation_roi",
+    }
+    for enabled in (False, True):
+        ui = create_ui(enable_annotation=enabled)
+        tabs = {
+            item["props"].get("label")
+            for item in ui.config["components"] if item["type"] == "tabitem"
+        }
+        endpoints = set(ui.get_api_info()["named_endpoints"])
+        assert ("图片标注" in tabs) is enabled
+        assert (annotation_apis <= endpoints) is enabled
+        if not enabled:
+            assert not annotation_apis & endpoints
+            assert not any(item.fn.__name__ == "begin_annotation" for item in ui.fns.values())
+        assert {"/training_status", "/dataset_version_status", "/predict_images"} <= endpoints
+        assert "/start_training" not in endpoints
+
+
+def test_annotation_and_training_startup_options_can_be_combined(monkeypatch) -> None:
+    import pytest
+
+    calls = []
+
+    class FakeDemo:
+        css = head = ""
+
+        def launch(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(app_entrypoint, "create_demo", lambda **kwargs: calls.append(kwargs) or FakeDemo())
+    app_entrypoint.main(["--enable-annotation", "--enable-training"])
+    assert calls == [{"enable_training": True, "enable_annotation": True}]
+    with pytest.raises(SystemExit):
+        app_entrypoint.main(["--inference-only"])
+
+
+def test_training_page_and_manual_api_require_startup_flag() -> None:
+    for training in (False, True):
+        for annotation in (False, True):
+            ui = create_ui(enable_training=training, enable_annotation=annotation)
+            tabs = {
+                item["props"].get("label")
+                for item in ui.config["components"] if item["type"] == "tabitem"
+            }
+            endpoints = set(ui.get_api_info()["named_endpoints"])
+            assert ("模型训练" in tabs) is training
+            assert ("/start_training" in endpoints) is training
+            assert ("/start_annotation" in endpoints) is annotation
+            assert {"数据集版本", "图片推理"} <= tabs
+            assert {"/import_labeled_dataset", "/training_status"} <= endpoints
+
+
 def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
     client = TestClient(App.create_app(demo))
 
@@ -75,7 +134,7 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
         item["props"].get("label") for item in demo.config["components"]
     }
     assert "工作区子文件夹" not in component_labels
-    assert "数据集目录（当前基础数据集）" in component_labels
+    assert "数据集目录（当前基础数据集）" not in component_labels
     assert {
         "/activate_dataset_version",
         "/annotation_status",
@@ -90,24 +149,18 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
         "/start_training",
         "/training_status",
         "/update_annotation_roi",
+        "/upload_images",
     } == set(demo.get_api_info()["named_endpoints"])
 
 
-def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
+def test_inference_automatically_selects_model_and_device() -> None:
     components = {
         item["props"].get("label"): item["props"]
         for item in demo.config["components"]
     }
 
-    model_info = components["选择模型（runs 目录下已训练权重，可输入自定义路径）"]["info"]
-    device_info = components["设备"]["info"]
-
-    assert "输入尺寸优先读取权重元数据" in model_info
-    assert "CUDA 可用时使用 CUDA" in device_info
-    assert "809 × 1080" in model_info
-    assert "12000 px" in model_info
-    assert "置信度阈值 0.45" in model_info
-    assert "未记录时默认 224" in model_info
+    assert "选择模型（runs 目录下已训练权重，可输入自定义路径）" not in components
+    assert "设备" not in components
 
     inference_table = next(
         item["props"]
@@ -122,6 +175,40 @@ def test_inference_controls_expose_recommended_defaults_on_hover() -> None:
         "defocused",
         "错误",
     ]
+
+
+def test_model_information_refreshes_on_load_and_inference_tab_selection() -> None:
+    for training in (False, True):
+        ui = create_ui(enable_training=training)
+        callbacks = [
+            item for item in ui.fns.values()
+            if getattr(item.fn, "__name__", "") == "refresh_model_info"
+        ]
+        assert {event for item in callbacks for _, event in item.targets} == {"load", "select"}
+
+
+def test_training_completion_refreshes_automatic_model_info(tmp_path, monkeypatch) -> None:
+    run = tmp_path / "data" / "runs" / "dataset-v0002"
+    run.mkdir(parents=True)
+    best = run / "best.pt"
+    best.write_bytes(b"weights")
+    (run / "last.pt").write_bytes(b"weights")
+    monkeypatch.setattr(webui_service, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        webui_service.WebUIService, "start_training",
+        lambda self, payload: {"job_id": "job", "output": str(run), "status": "running"},
+    )
+    monkeypatch.setattr(
+        webui_service.WebUIService, "training_status",
+        lambda self, job_id: {"status": "completed", "return_code": 0, "log": ""},
+    )
+    ui = create_ui(enable_training=True)
+    train = next(
+        item.fn for item in ui.fns.values()
+        if getattr(item.fn, "__name__", "") == "train"
+    )
+    updates = list(train(str(tmp_path / "data"), 1, "resnet18", 1, 32, 0.001, 42, "cpu", "", False))
+    assert str(best) in updates[-1][2]
 
 
 def test_inference_gallery_explains_result_annotations() -> None:
@@ -167,8 +254,12 @@ def test_inference_button_is_enabled_only_when_images_are_uploaded() -> None:
     assert callback(["frame.png"])["interactive"] is True
 
 
-def test_inference_results_use_english_labels_and_probability_columns(monkeypatch) -> None:
+def test_inference_results_use_english_labels_and_probability_columns(monkeypatch, tmp_path) -> None:
     annotated_image = object()
+    monkeypatch.setattr(webui_service, "ROOT", tmp_path)
+    checkpoint = tmp_path / "data" / "runs" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"weights")
     monkeypatch.setattr(
         webui_service.WebUIService,
         "predict",
@@ -191,11 +282,12 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
             ]
         },
     )
+    ui = create_ui()
     callback = next(
-        item.fn for item in demo.fns.values() if item.fn.__name__ == "predict_images"
+        item.fn for item in ui.fns.values() if item.fn.__name__ == "predict_api"
     )
 
-    _, previews, rows = callback(["frame.png"], "model.pt", "cpu")
+    _, previews, rows = callback(["frame.png"])
 
     assert rows == [
         ["frame.png", "borderline", "10.0%", "70.0%", "20.0%", ""]
@@ -205,6 +297,39 @@ def test_inference_results_use_english_labels_and_probability_columns(monkeypatc
     assert previews[0][1] == (
         "frame.png: 临界 (borderline) · sharp 10.0% · borderline 70.0% · defocused 20.0%"
     )
+
+
+def test_page_inference_uses_latest_best_and_auto_device_each_time(tmp_path, monkeypatch) -> None:
+    import os
+    import pytest
+
+    monkeypatch.setattr(webui_service, "ROOT", tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        webui_service.WebUIService, "predict",
+        lambda self, files, *, model, device: calls.append((model, device)) or {"results": []},
+    )
+    ui = create_ui()
+    callback = next(item.fn for item in ui.fns.values()
+                    if getattr(item.fn, "__name__", "") == "predict_automatically")
+    api_callback = next(item.fn for item in ui.fns.values()
+                        if getattr(item.fn, "__name__", "") == "predict_api")
+    with pytest.raises(Exception, match="未发现"):
+        callback(["frame.png"])
+    with pytest.raises(Exception, match="未发现"):
+        api_callback(["frame.png"])
+    older = tmp_path / "data" / "runs" / "dataset-v0001" / "best.pt"
+    older.parent.mkdir(parents=True)
+    older.write_bytes(b"old")
+    os.utime(older, (1000000, 1000000))
+    callback(["frame.png"])
+    newer = tmp_path / "data" / "runs" / "dataset-v0002" / "best.pt"
+    newer.parent.mkdir(parents=True)
+    newer.write_bytes(b"new")
+    callback(["frame.png"])
+    result = api_callback(["frame.png"])
+    assert len(result) == 3
+    assert calls == [(str(older), "auto"), (str(newer), "auto"), (str(newer), "auto")]
 
 
 def test_training_controls_use_recommended_defaults() -> None:
@@ -223,8 +348,8 @@ def test_training_controls_use_recommended_defaults() -> None:
     assert "不要设为 1.0" in components["学习率"]["info"]
 
 
-def test_inference_only_ui_excludes_dataset_annotation_and_training() -> None:
-    inference_demo = create_demo(inference_only=True)
+def test_default_ui_excludes_annotation_and_training() -> None:
+    inference_demo = create_demo()
     component_labels = {
         item["props"].get("label")
         for item in inference_demo.config["components"]
@@ -246,7 +371,7 @@ def test_inference_only_ui_excludes_dataset_annotation_and_training() -> None:
 
 def test_inference_api_documentation_describes_request_and_response() -> None:
     endpoint = demo.get_api_info()["named_endpoints"]["/predict_images"]
-    assert endpoint["description"] == "对一张或多张图片进行热区裁剪和清晰度三分类。"
+    assert "自动使用最新" in endpoint["description"]
 
     parameter_descriptions = {
         parameter["parameter_name"]: parameter["python_type"]["description"]
@@ -254,8 +379,7 @@ def test_inference_api_documentation_describes_request_and_response() -> None:
     }
     assert "图片文件列表" in parameter_descriptions["files"]
     assert "每张图片最大 40 MiB" in parameter_descriptions["files"]
-    assert ".pt 分类器权重文件路径" in parameter_descriptions["model"]
-    assert "auto、cuda 或 cpu" in parameter_descriptions["device"]
+    assert set(parameter_descriptions) == {"files"}
 
     return_labels = [item["label"] for item in endpoint["returns"]]
     assert "成功获得推理结果数 / 输入图片总数" in return_labels[0]
@@ -285,10 +409,11 @@ def test_business_apis_are_named_and_page_events_are_not_published() -> None:
         "/start_training",
         "/training_status",
         "/update_annotation_roi",
+        "/upload_images",
     } == set(named_endpoints)
 
     prediction = named_endpoints["/predict_images"]
-    assert len(prediction["parameters"]) == 3
+    assert len(prediction["parameters"]) == 1
     assert len(prediction["returns"]) == 3
     assert all(
         parameter["python_type"]["description"]
@@ -300,11 +425,6 @@ def test_business_apis_are_named_and_page_events_are_not_published() -> None:
         for endpoint in named_endpoints.values()
         for result in endpoint["returns"]
     )
-    model_parameter = next(
-        item for item in prediction["parameters"] if item["parameter_name"] == "model"
-    )
-    assert model_parameter["python_type"]["type"] == "str"
-    assert "enum" not in model_parameter["type"]
     annotation_response = named_endpoints["/start_annotation"]["returns"][0]["type"]
     assert "session_id" in annotation_response["properties"]
     assert "current" in annotation_response["properties"]
@@ -319,13 +439,149 @@ def test_business_apis_are_named_and_page_events_are_not_published() -> None:
     ]
 
 
-def test_inference_only_ui_publishes_only_inference_and_model_listing() -> None:
-    inference_demo = create_demo(inference_only=True)
+def test_all_named_apis_document_parameters_and_responses() -> None:
+    named_endpoints = create_ui(
+        enable_annotation=True, enable_training=True
+    ).get_api_info()["named_endpoints"]
 
-    assert set(inference_demo.get_api_info()["named_endpoints"]) == {
-        "/list_models",
-        "/predict_images",
+    for endpoint in named_endpoints.values():
+        assert endpoint["description"].strip()
+        assert endpoint["returns"]
+        assert all(
+            parameter["python_type"]["description"].strip()
+            for parameter in endpoint["parameters"]
+        )
+        assert all(result["label"].strip() and result["type"] for result in endpoint["returns"])
+
+    training_parameters = {
+        parameter["parameter_name"]: parameter["python_type"]["description"]
+        for parameter in named_endpoints["/start_training"]["parameters"]
     }
+    assert "默认 30" in training_parameters["epochs"]
+    assert "mobilenet_v3_small" in training_parameters["architecture"]
+    assert "auto、cpu、cuda" in training_parameters["device"]
+
+    annotation_response = named_endpoints["/annotation_status"]["returns"][0][
+        "python_type"
+    ]["description"]
+    assert "claimed_by_other" in annotation_response
+    assert "image_size" in annotation_response
+    roi_parameters = {
+        parameter["parameter_name"]: parameter["python_type"]["description"]
+        for parameter in named_endpoints["/update_annotation_roi"]["parameters"]
+    }
+    assert "只预览" in roi_parameters["save"]
+    assert "重裁" in roi_parameters["save"]
+
+    field_descriptions = {
+        "/list_models": (
+            "runs_dir", "models", "path", "dataset", "workspace", "modified",
+            "architecture", "input_size", "dataset_version",
+        ),
+        "/dataset_version_status": (
+            "active_version", "latest_version", "versions", "version", "parent",
+            "created_at", "sample_count", "source_hashes", "training",
+            "job_id", "status", "return_code",
+        ),
+        "/import_labeled_dataset": (
+            "active_version", "latest_version", "versions", "training_job",
+            "job_id", "status", "output",
+        ),
+        "/activate_dataset_version": (
+            "active_version", "latest_version", "versions",
+        ),
+        "/training_status": (
+            "job_id", "status", "return_code", "output", "log",
+        ),
+        "/start_annotation": (
+            "session_id", "total", "index", "workspace_name", "input_dir",
+            "output_dir", "roi_database_path", "current",
+        ),
+        "/annotation_status": (
+            "session_id", "index", "total", "filename", "image_path", "label",
+            "claimed_by_other", "labeled_count", "roi", "image_size",
+        ),
+        "/claim_next_unlabeled": ("claimed", "current"),
+        "/save_annotation": ("saved", "skipped", "current"),
+        "/update_annotation_roi": ("updated_labels", "current"),
+    }
+    for api_name, field_names in field_descriptions.items():
+        description = named_endpoints[api_name]["returns"][0]["python_type"]["description"]
+        assert all(field_name in description for field_name in field_names), api_name
+
+
+def test_import_api_documents_parameters_validation_and_training() -> None:
+    endpoint = create_ui().get_api_info()["named_endpoints"]["/import_labeled_dataset"]
+    assert endpoint["description"] == "按类别导入图片，创建数据集版本并自动排队训练。"
+    parameters = {
+        p["parameter_name"]: p["python_type"]["description"]
+        for p in endpoint["parameters"]
+    }
+    assert "服务端" in parameters["dataset_root"]
+    assert "待提交的标注" in parameters["dataset_root"]
+    for key, label in (
+        ("sharp_files", "清晰"),
+        ("borderline_files", "临界"),
+        ("defocused_files", "模糊"),
+    ):
+        assert label in parameters[key]
+        assert "空列表" in parameters[key]
+        assert "40 MiB" in parameters[key]
+        assert "SHA-256" in parameters[key]
+    return_info = endpoint["returns"][0]
+    for text in (
+        "active_version", "latest_version", "versions", "version", "parent",
+        "created_at", "sample_count", "source_hashes", "training_job",
+        "job_id", "status", "output", "/training_status",
+    ):
+        assert text in return_info["python_type"]["description"]
+    result_schema = return_info["type"]
+    assert "training_job" in result_schema["required"]
+    assert {"job_id", "status", "output"} <= set(
+        result_schema["properties"]["training_job"]["properties"]
+    )
+
+
+def test_upload_images_api_validates_files_and_exposes_documentation(tmp_path, monkeypatch) -> None:
+    import cv2
+    import numpy as np
+    import pytest
+
+    ui = create_ui()
+    endpoint = ui.get_api_info()["named_endpoints"]["/upload_images"]
+    assert [param["parameter_name"] for param in endpoint["parameters"]] == ["files"]
+    assert endpoint["description"] == "校验上传图片，不会保存到数据集或触发推理、训练。"
+    parameter_description = endpoint["parameters"][0]["python_type"]["description"]
+    assert all(text in parameter_description for text in
+               ("handle_file", "40 MiB", "可解码"))
+    output_description = endpoint["returns"][0]["python_type"]["description"]
+    assert all(text in output_description for text in
+               ("server_path", "filename", "size_bytes", "可能被清理"))
+    callback = next(item.fn for item in ui.fns.values()
+                    if getattr(item.fn, "__name__", "") == "upload_images")
+    image = tmp_path / "frame.png"
+    assert cv2.imwrite(str(image), np.zeros((10, 10, 3), dtype=np.uint8))
+    result = callback([{"path": str(image)}])
+    assert result == [{"server_path": str(image), "filename": "frame.png",
+                       "size_bytes": image.stat().st_size}]
+    with pytest.raises(ValueError, match="at least one"):
+        callback([])
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    with pytest.raises(ValueError):
+        callback([{"path": str(bad)}])
+    other = tmp_path / "bad.txt"
+    other.write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="extension"):
+        callback([{"path": str(other)}])
+    monkeypatch.setattr("webui.public_api.MAX_UPLOAD_BYTES", 1)
+    with pytest.raises(ValueError, match="exceeds"):
+        callback([{"path": str(image)}])
+    monkeypatch.setattr("webui.public_api.MAX_UPLOAD_BYTES", 40 * 1024 * 1024)
+    monkeypatch.setattr("webui.public_api.load_config",
+                        lambda _path: {"image": {"max_dimension": 5}})
+    with pytest.raises(ValueError, match="exceed"):
+        callback([{"path": str(image)}])
 
 
 def test_webui_uses_one_fixed_data_directory_without_workspace_picker() -> None:
@@ -336,7 +592,17 @@ def test_webui_uses_one_fixed_data_directory_without_workspace_picker() -> None:
 
     assert "工作区根目录" not in labels
     assert "工作区子文件夹" not in labels
-    assert "数据集目录（当前基础数据集）" in labels
+    assert "数据集目录（当前基础数据集）" not in labels
+    root = next(
+        component for component in demo.blocks.values()
+        if isinstance(component, gr.State)
+        and component.value == str(webui_service.ROOT / "data")
+    )
+    for callback in ("begin_annotation", "refresh_versions", "import_dataset", "train"):
+        assert any(
+            item.fn.__name__ == callback and root in item.inputs
+            for item in demo.fns.values()
+        )
     assert any(
         item.fn.__name__ == "begin_annotation"
         for item in demo.fns.values()

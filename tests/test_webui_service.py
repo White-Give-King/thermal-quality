@@ -181,6 +181,12 @@ def test_training_options_validate_dataset_and_parameters(tmp_path) -> None:
     assert options["pretrained"] is True
 
 
+@pytest.mark.parametrize(("cuda_available", "expected"), [(True, "cuda"), (False, "cpu")])
+def test_auto_inference_device_uses_available_cuda(monkeypatch, cuda_available, expected) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    assert webui_service._device_name("auto") == expected
+
+
 def test_training_options_reject_invalid_parameters(tmp_path) -> None:
     import sqlite3
 
@@ -355,11 +361,12 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
     monkeypatch.setenv("THERMAL_FOCUS_CONFIG", str(config))
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_bytes(b"placeholder")
+    loads = []
     monkeypatch.setattr(
         webui_service,
         "load_classifier",
         lambda _path, device: (
-            predictor,
+            loads.append(_path) or predictor,
             {"input_size": 64, "model_version": "test-model"},
         ),
     )
@@ -373,7 +380,8 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
     invalid_image_path = tmp_path / "invalid.png"
     invalid_image_path.write_bytes(b"not an image")
 
-    response = WebUIService().predict(
+    service = WebUIService()
+    response = service.predict(
         [image_path, invalid_image_path, second_image_path],
         model=str(checkpoint),
         device="cpu",
@@ -397,6 +405,11 @@ def test_prediction_file_returns_real_model_result_and_previews(monkeypatch, tmp
         assert isinstance(preview, np.ndarray)
         assert preview.shape[2] == 3
         assert preview.dtype == np.uint8
+    service.predict([image_path], model=str(checkpoint), device="cpu")
+    assert len(loads) == 1
+    checkpoint.write_bytes(b"replacement checkpoint")
+    service.predict([image_path], model=str(checkpoint), device="cpu")
+    assert len(loads) == 2
 
 
 def test_web_annotation_workspace_navigate_label_and_roi_persistence(monkeypatch, tmp_path) -> None:
@@ -849,6 +862,144 @@ def test_training_manager_starts_only_one_job(monkeypatch, tmp_path) -> None:
     with pytest.raises(RuntimeError, match="already running"):
         manager.start(options)
     allow_exit.set()
+
+
+def test_training_queue_runs_each_snapshot_sequentially_and_keeps_status(
+    monkeypatch, tmp_path
+) -> None:
+    gates = [threading.Event(), threading.Event(), threading.Event()]
+    started = []
+    commands = []
+
+    class FakeProcess:
+        def __init__(self, index):
+            self.index = index
+
+        def wait(self):
+            assert gates[self.index].wait(timeout=10)
+            return 1 if self.index == 0 else 0
+
+    def popen(command, **kwargs):
+        index = len(started)
+        commands.append(command)
+        started.append(index)
+        return FakeProcess(index)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    manager = TrainingJobs()
+    options = {
+        "database": str(tmp_path / "v0001.sqlite3"),
+        "image_root": str(tmp_path),
+        "output": str(tmp_path / "dataset-v0001"),
+        "epochs": 1, "architecture": "resnet18", "batch_size": 1,
+        "input_size": 32, "learning_rate": 0.001, "seed": 42,
+        "device": "cpu", "resume": "", "pretrained": False,
+    }
+    first = manager.start(options)
+    second = manager.start({
+        **options, "database": str(tmp_path / "v0002.sqlite3"),
+        "output": str(tmp_path / "dataset-v0002"),
+    }, enqueue=True)
+    third = manager.start({
+        **options, "database": str(tmp_path / "v0003.sqlite3"),
+        "output": str(tmp_path / "dataset-v0003"),
+    }, enqueue=True)
+    assert first["status"] == "running"
+    assert second["status"] == third["status"] == "queued"
+    assert len(started) == 1
+    assert "--no-pretrained" in commands[0]
+    with pytest.raises(RuntimeError, match="already running"):
+        manager.start(options)
+
+    def wait_for(job, state):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = manager.status(job["job_id"])
+            if status["status"] == state:
+                return status
+            time.sleep(0.01)
+        pytest.fail(f"job did not reach {state}: {status}")
+
+    gates[0].set()
+    wait_for(second, "running")
+    assert manager.status(first["job_id"])["status"] == "failed"
+    assert len(started) == 2
+    assert commands[1][commands[1].index("--database") + 1] == str(tmp_path / "v0002.sqlite3")
+    gates[1].set()
+    wait_for(third, "running")
+    assert manager.status(second["job_id"])["status"] == "completed"
+    assert commands[2][commands[2].index("--database") + 1] == str(tmp_path / "v0003.sqlite3")
+    gates[2].set()
+    wait_for(third, "completed")
+
+
+def test_model_list_identifies_dataset_version(tmp_path) -> None:
+    from webui.inference_tab import describe_model
+
+    version_dir = tmp_path / "runs" / "dataset-v0002"
+    version_dir.mkdir(parents=True)
+    (version_dir / "best.pt").write_bytes(b"weights")
+    models = webui_service.list_trained_models(tmp_path)
+    assert models[0]["dataset_version"] == "v0002"
+    assert "v0002" in describe_model(models, models[0]["path"])
+
+
+def test_model_list_includes_all_checkpoints_and_defaults_to_best(tmp_path) -> None:
+    from webui.inference_tab import default_model_path
+
+    version_dir = tmp_path / "runs" / "dataset-v0002"
+    version_dir.mkdir(parents=True)
+    best = version_dir / "best.pt"
+    last = version_dir / "last.pt"
+    extra = version_dir / "epoch-10.pt"
+    for path in (best, last, extra):
+        path.write_bytes(b"weights")
+    os.utime(best, (1000000, 1000000))
+    os.utime(last, (2000000, 2000000))
+    os.utime(extra, (3000000, 3000000))
+
+    models = webui_service.list_trained_models(tmp_path)
+    assert {Path(item["path"]) for item in models} == {best, last, extra}
+    assert default_model_path(models) == str(best)
+    best.unlink()
+    assert default_model_path(webui_service.list_trained_models(tmp_path)) is None
+
+
+def test_refresh_model_info_finds_new_models(tmp_path, monkeypatch) -> None:
+    from webui.app import create_ui
+
+    monkeypatch.setattr(webui_service, "ROOT", tmp_path)
+    run = tmp_path / "data" / "runs" / "dataset-v0001"
+    run.mkdir(parents=True)
+    best = run / "best.pt"
+    best.write_bytes(b"weights")
+    demo = create_ui()
+    callback = next(item.fn for item in demo.fns.values()
+                    if getattr(item.fn, "__name__", "") == "refresh_model_info")
+    assert str(best) in callback()
+    newer = tmp_path / "data" / "runs" / "dataset-v0002" / "best.pt"
+    newer.parent.mkdir(parents=True)
+    newer.write_bytes(b"weights")
+    os.utime(best, (1000000, 1000000))
+    assert str(newer) in callback()
+
+
+def test_training_start_failure_is_visible_and_does_not_block_queue(monkeypatch, tmp_path) -> None:
+    def fail(*args, **kwargs):
+        raise OSError("process unavailable")
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    manager = TrainingJobs()
+    options = {
+        "database": str(tmp_path / "db"), "image_root": str(tmp_path),
+        "output": str(tmp_path / "run"), "epochs": 1,
+        "architecture": "resnet18", "batch_size": 1, "input_size": 32,
+        "learning_rate": 0.001, "seed": 42, "device": "cpu", "pretrained": False,
+    }
+    first = manager.start(options, enqueue=True)
+    second = manager.start(options, enqueue=True)
+    assert first["status"] == second["status"] == "failed"
+    assert "process unavailable" in manager.status(first["job_id"])["log"]
 
 
 def test_webui_runs_training_subprocess_to_checkpoint(tmp_path) -> None:

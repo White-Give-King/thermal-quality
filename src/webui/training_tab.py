@@ -7,18 +7,18 @@ import time
 import gradio as gr
 
 from webui.data_root import DataRootPanel
-from webui.inference_tab import describe_model, list_models, model_choices
+from webui.inference_tab import default_model_path, describe_model, list_models
 from webui_service import WebUIService
 
 
 def build_training_tab(
     service: WebUIService,
     data_root: DataRootPanel,
-    model_path: gr.Dropdown,
     model_info: gr.Markdown,
 ) -> None:
     gr.Markdown(
-        "训练始终读取上方 `data/` 数据集目录的当前生效版本；模型输出到 `data/runs/dataset-vNNNN/`。"
+        "导入新版本后自动使用默认参数排队训练；手动训练读取当前生效版本，"
+        "已有任务运行或排队时不能手动启动。模型输出到 `data/runs/dataset-vNNNN/`。"
         "默认使用预训练 MobileNetV3-Large、30 轮、batch 16、输入 224、学习率 0.0001；"
         "这是适合当前小数据集的推荐起点，不代表已通过超参数搜索验证为最优。",
         elem_classes=["tab-hint"],
@@ -129,22 +129,17 @@ def build_training_tab(
                 f'训练状态：{status["status"]} | 返回码：{status["return_code"]}',
                 status.get("log", ""),
                 gr.update(),
-                gr.update(),
             )
             if status["status"] != "running":
                 break
             time.sleep(2)
         if status["return_code"] == 0:
             models = list_models(service)
-            choices = model_choices(models)
-            if choices:
-                value = choices[0][1]
-                yield (
-                    "训练完成（返回码 0），已刷新模型列表并选中最新模型。",
-                    status.get("log", ""),
-                    gr.Dropdown(choices=choices, value=value),
-                    describe_model(models, value),
-                )
+            yield (
+                "训练完成（返回码 0），已刷新自动选择的模型信息。",
+                status.get("log", ""),
+                describe_model(models, default_model_path(models)),
+            )
 
     train_button.click(
         train,
@@ -160,6 +155,6 @@ def build_training_tab(
             resume_checkpoint,
             use_pretrained,
         ],
-        outputs=[training_message, training_log, model_path, model_info],
+        outputs=[training_message, training_log, model_info],
         api_name=False,
     )

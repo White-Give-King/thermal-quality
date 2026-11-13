@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -79,15 +80,35 @@ class TrainingJobs:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._job: dict[str, Any] | None = None
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._pending: deque[dict[str, Any]] = deque()
 
-    def start(self, options: dict[str, Any]) -> dict[str, Any]:
+    def start(self, options: dict[str, Any], *, enqueue: bool = False) -> dict[str, Any]:
         with self._lock:
-            if self._job and self._job["status"] == "running":
+            if not enqueue and (self._job is not None or self._pending):
                 raise RuntimeError("a training job is already running")
             job_id = uuid.uuid4().hex
             output = Path(options["output"]).expanduser().resolve()
-            output.mkdir(parents=True, exist_ok=True)
-            log_path = output / "webui-training.log"
+            job = {
+                "job_id": job_id,
+                "status": "queued",
+                "return_code": None,
+                "log_path": output / "webui-training.log",
+                "log_offset": 0,
+                "log_tail": "",
+                "output": str(output),
+                "options": options.copy(),
+            }
+            self._jobs[job_id] = job
+            self._pending.append(job)
+            self._start_next_locked()
+            return {"job_id": job_id, "status": job["status"], "output": str(output)}
+
+    def _start_next_locked(self) -> None:
+        while self._job is None and self._pending:
+            job = self._pending.popleft()
+            options = job["options"]
+            output = Path(job["output"])
             command = [
                 sys.executable,
                 "-u",
@@ -117,7 +138,16 @@ class TrainingJobs:
                 command.extend(["--resume", str(Path(options["resume"]).expanduser().resolve())])
             if options.get("pretrained"):
                 command.append("--pretrained")
-            log_file = log_path.open("w", encoding="utf-8")
+            else:
+                command.append("--no-pretrained")
+            try:
+                output.mkdir(parents=True, exist_ok=True)
+                log_file = job["log_path"].open("w", encoding="utf-8")
+            except OSError as exc:
+                job["status"] = "failed"
+                job["log_tail"] = f"训练启动失败：{exc}"
+                LOGGER.exception("could not prepare training job %s", job["job_id"])
+                continue
             try:
                 process = subprocess.Popen(
                     command,
@@ -129,22 +159,15 @@ class TrainingJobs:
                     errors="replace",
                     env=_utf8_env(),
                 )
-            except OSError:
+            except OSError as exc:
                 log_file.close()
-                raise
-            self._job = {
-                "job_id": job_id,
-                "status": "running",
-                "return_code": None,
-                "log_path": log_path,
-                "log_offset": 0,
-                "log_tail": "",
-                "process": process,
-                "log_file": log_file,
-                "output": str(output),
-            }
-            threading.Thread(target=self._watch, args=(job_id,), daemon=True).start()
-            return {"job_id": job_id, "status": "running", "output": str(output)}
+                job["status"] = "failed"
+                job["log_tail"] = f"训练启动失败：{exc}"
+                LOGGER.exception("could not start training job %s", job["job_id"])
+                continue
+            job.update(status="running", process=process, log_file=log_file)
+            self._job = job
+            threading.Thread(target=self._watch, args=(job["job_id"],), daemon=True).start()
 
     def _watch(self, job_id: str) -> None:
         with self._lock:
@@ -157,13 +180,36 @@ class TrainingJobs:
         log_file.close()
         with self._lock:
             if self._job and self._job["job_id"] == job_id:
+                try:
+                    with self._job["log_path"].open("rb") as stream:
+                        stream.seek(0, os.SEEK_END)
+                        stream.seek(max(0, stream.tell() - LOG_TAIL_CHARS * 4))
+                        self._job["log_tail"] = stream.read().decode(
+                            "utf-8", "replace"
+                        )[-LOG_TAIL_CHARS:]
+                except OSError as exc:
+                    LOGGER.warning("could not read training log %s: %s", self._job["log_path"], exc)
+                    self._job["log_tail"] = f"训练日志读取失败：{exc}"
                 self._job["return_code"] = return_code
                 self._job["status"] = "completed" if return_code == 0 else "failed"
+                self._job = None
+                self._start_next_locked()
+
+    def latest_for_output(self, output: Path) -> dict[str, Any] | None:
+        with self._lock:
+            for job in reversed(list(self._jobs.values())):
+                if job["output"] == str(output.resolve()):
+                    return {
+                        "job_id": job["job_id"],
+                        "status": job["status"],
+                        "return_code": job["return_code"],
+                    }
+        return None
 
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
-            job = self._job
-            if not job or job["job_id"] != job_id:
+            job = self._jobs.get(job_id)
+            if not job:
                 return None
             log_path = job["log_path"]
             offset = job["log_offset"]
@@ -174,24 +220,25 @@ class TrainingJobs:
                 "return_code": job["return_code"],
                 "output": job["output"],
             }
-        try:
-            with log_path.open("rb") as stream:
-                size = stream.seek(0, os.SEEK_END)
-                if size < offset:
-                    offset = 0
-                stream.seek(offset)
-                chunk = stream.read()
-        except OSError as exc:
-            LOGGER.warning("could not read training log %s: %s", log_path, exc)
-            status["log"] = f"训练日志读取失败：{exc}"
+            if job["status"] != "running":
+                status["log"] = tail
+                return status
+            try:
+                with log_path.open("rb") as stream:
+                    size = stream.seek(0, os.SEEK_END)
+                    if size < offset:
+                        offset = 0
+                    stream.seek(offset)
+                    chunk = stream.read()
+            except OSError as exc:
+                LOGGER.warning("could not read training log %s: %s", log_path, exc)
+                status["log"] = f"训练日志读取失败：{exc}"
+                return status
+            text = (tail + chunk.decode("utf-8", "replace"))[-LOG_TAIL_CHARS:]
+            job["log_offset"] = offset + len(chunk)
+            job["log_tail"] = text
+            status["log"] = text
             return status
-        text = (tail + chunk.decode("utf-8", "replace"))[-LOG_TAIL_CHARS:]
-        with self._lock:
-            if self._job and self._job["job_id"] == job_id:
-                self._job["log_offset"] = offset + len(chunk)
-                self._job["log_tail"] = text
-        status["log"] = text
-        return status
 
 
 def _device_name(requested: str) -> str:
@@ -452,7 +499,7 @@ def _read_training_metadata(run_dir: Path) -> dict[str, Any]:
 
 
 def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, Any]]:
-    """Scan runs/ and workspace folders for best.pt checkpoints, newest first."""
+    """Scan runs/ and workspace folders for .pt checkpoints, newest first."""
     if runs_root:
         roots = [Path(runs_root).expanduser().resolve()]
     else:
@@ -463,29 +510,35 @@ def list_trained_models(runs_root: str | Path | None = None) -> list[dict[str, A
     for root in roots:
         if not root.is_dir():
             continue
-        for best in root.rglob("best.pt"):
-            resolved = str(best.resolve())
+        for checkpoint in root.rglob("*.pt"):
+            if not checkpoint.is_file():
+                continue
+            resolved = str(checkpoint.resolve())
             if resolved in seen:
                 continue
             seen.add(resolved)
             try:
-                stat_result = best.stat()
+                stat_result = checkpoint.stat()
             except OSError:
                 continue
-            metadata = _read_training_metadata(best.parent)
-            if best.parent.name.startswith("dataset-v") and best.parent.parent.name == "runs":
-                workspace = best.parent.parent.parent.name
-            elif best.parent.name == "runs" and best.parent != root:
-                workspace = best.parent.parent.name
+            metadata = _read_training_metadata(checkpoint.parent)
+            if checkpoint.parent.name.startswith("dataset-v") and checkpoint.parent.parent.name == "runs":
+                workspace = checkpoint.parent.parent.parent.name
+                dataset_version = checkpoint.parent.name.removeprefix("dataset-")
+            elif checkpoint.parent.name == "runs" and checkpoint.parent != root:
+                workspace = checkpoint.parent.parent.name
+                dataset_version = None
             else:
-                workspace = best.parent.name
+                workspace = checkpoint.parent.name
+                dataset_version = None
             entries.append(
                 (
                     stat_result.st_mtime,
                     {
-                        "path": str(best),
+                        "path": resolved,
                         "dataset": workspace,
                         "workspace": workspace,
+                        "dataset_version": dataset_version,
                         "modified": datetime.fromtimestamp(
                             stat_result.st_mtime
                         ).strftime("%Y-%m-%d %H:%M"),
@@ -506,7 +559,7 @@ class WebUIService:
         self.config_path = Path(
             os.environ.get("THERMAL_FOCUS_CONFIG", str(ROOT / "configs" / "default.yaml"))
         ).expanduser()
-        self._model_cache: dict[tuple[str, str], tuple[InferenceEngine, dict[str, Any]]] = {}
+        self._model_cache: dict[tuple[str, str, int, int], tuple[InferenceEngine, dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
         self._annotation_sessions: dict[str, dict[str, Any]] = {}
         self._annotation_lock = threading.RLock()
@@ -522,7 +575,13 @@ class WebUIService:
 
     def dataset_version_status(self, dataset_root: str | Path) -> dict[str, Any]:
         with self._dataset_version_lock:
-            return self._dataset_version_store(dataset_root).status()
+            status = self._dataset_version_store(dataset_root).status()
+            root = Path(dataset_root).expanduser().resolve()
+            for record in status["versions"]:
+                record["training"] = self.jobs.latest_for_output(
+                    root / "runs" / f'dataset-v{record["version"]:04d}'
+                )
+            return status
 
     def import_labeled_dataset(
         self,
@@ -531,11 +590,21 @@ class WebUIService:
     ) -> dict[str, Any]:
         with self._dataset_version_lock:
             store = self._dataset_version_store(dataset_root)
-            return store.import_labeled_images(
+            status = store.import_labeled_images(
                 files_by_label,
                 config=load_config(self.config_path),
                 max_upload_bytes=MAX_UPLOAD_BYTES,
             )
+            try:
+                options = _validate_training_options({"dataset_root": str(dataset_root)})
+                job = self.jobs.start(options, enqueue=True)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise RuntimeError(
+                    f'数据集版本 v{status["active_version"]:04d} 已创建，但训练排队失败：{exc}'
+                ) from exc
+            status = self.dataset_version_status(dataset_root)
+            status["training_job"] = job
+            return status
 
     def activate_dataset_version(
         self,
@@ -543,7 +612,8 @@ class WebUIService:
         version: int,
     ) -> dict[str, Any]:
         with self._dataset_version_lock:
-            return self._dataset_version_store(dataset_root).activate(version)
+            self._dataset_version_store(dataset_root).activate(version)
+            return self.dataset_version_status(dataset_root)
 
     def list_workspaces(self, root_dir: str | Path) -> dict[str, Any]:
         root_text = str(root_dir).strip()
@@ -1145,7 +1215,8 @@ class WebUIService:
         model_path = Path(model).expanduser().resolve()
         if not model_path.is_file():
             raise FileNotFoundError(f"classifier checkpoint does not exist: {model_path}")
-        key = (str(model_path), resolved_device)
+        stat_result = model_path.stat()
+        key = (str(model_path), resolved_device, stat_result.st_mtime_ns, stat_result.st_size)
         with self._cache_lock:
             cached = self._model_cache.get(key)
             if cached is None:
@@ -1219,8 +1290,9 @@ class WebUIService:
         return {"results": [result for result in results if result is not None]}
 
     def start_training(self, payload: dict[str, Any]) -> dict[str, Any]:
-        options = _validate_training_options(payload)
-        return self.jobs.start(options)
+        with self._dataset_version_lock:
+            options = _validate_training_options(payload)
+            return self.jobs.start(options)
 
     def training_status(self, job_id: str) -> dict[str, Any]:
         status = self.jobs.status(job_id)

@@ -13,7 +13,7 @@ from webui.training_tab import build_training_tab
 from webui_service import WebUIService
 
 
-def create_ui(*, inference_only: bool = False) -> gr.Blocks:
+def create_ui(*, enable_annotation: bool = False, enable_training: bool = False) -> gr.Blocks:
     """Create the Gradio interface backed by the in-process service layer."""
     service = WebUIService()
     with gr.Blocks(
@@ -24,22 +24,23 @@ def create_ui(*, inference_only: bool = False) -> gr.Blocks:
             "本地红外图像对焦质量的标注、推理与训练工具",
             elem_classes=["app-subtitle"],
         )
-        if inference_only:
-            gr.Markdown("仅推理模式：数据集、图片标注和模型训练功能已关闭。")
-            build_inference_tab(service)
-        else:
-            data_root = build_data_root_panel()
-            with gr.Tabs():
+        data_root = build_data_root_panel()
+        with gr.Tabs():
+            if enable_annotation:
                 with gr.Tab("图片标注"):
                     build_annotation_tab(service, data_root, demo)
-                with gr.Tab("数据集版本"):
-                    build_dataset_version_tab(service, data_root)
-                with gr.Tab("图片推理"):
-                    model_path, model_info = build_inference_tab(service)
+            with gr.Tab("数据集版本"):
+                build_dataset_version_tab(service, data_root)
+            with gr.Tab("图片推理") as inference_tab:
+                model_info = build_inference_tab(service, demo, inference_tab)
+            if enable_training:
                 with gr.Tab("模型训练"):
-                    build_training_tab(service, data_root, model_path, model_info)
+                    build_training_tab(service, data_root, model_info)
 
-        register_public_apis(service, include_management=not inference_only)
+        register_public_apis(
+            service, include_training=enable_training,
+            include_annotation=enable_annotation,
+        )
 
     return demo
 
@@ -196,8 +197,8 @@ _HEAD_JS = """
 """
 
 
-def create_demo(*, inference_only: bool = False) -> gr.Blocks:
-    demo = create_ui(inference_only=inference_only)
+def create_demo(*, enable_annotation: bool = False, enable_training: bool = False) -> gr.Blocks:
+    demo = create_ui(enable_annotation=enable_annotation, enable_training=enable_training)
     # Keep demo.css/theme/head as non-None strings so App.create_app(demo) test path
     # can render without jinja2 undefined errors. launch() treats them the same.
     demo.css = _CSS

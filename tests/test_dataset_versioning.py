@@ -203,6 +203,9 @@ def test_training_uses_the_active_dataset_snapshot(tmp_path: Path, monkeypatch) 
     _write_image(incoming)
     monkeypatch.setattr(webui_service, "load_config", lambda _: _config())
     service = WebUIService()
+    monkeypatch.setattr(service.jobs, "start", lambda options, **kwargs: {
+        "job_id": "test", "status": "queued", "output": options["output"]
+    })
     service.import_labeled_dataset(data_root, {"sharp": [incoming]})
 
     options = _validate_training_options(
@@ -226,3 +229,69 @@ def test_training_uses_the_active_dataset_snapshot(tmp_path: Path, monkeypatch) 
     assert options["output"] == str(
         (project / "data" / "runs" / "dataset-v0002").resolve()
     )
+
+
+def test_import_queues_each_created_version_even_after_rollback(tmp_path: Path, monkeypatch) -> None:
+    import threading
+    import time
+    import webui_service
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    incoming = tmp_path / "first.png"
+    later = tmp_path / "second.png"
+    _write_image(incoming, 40)
+    _write_image(later, 80)
+    monkeypatch.setattr(webui_service, "load_config", lambda _: _config())
+    gate = threading.Event()
+    commands = []
+
+    class Process:
+        def wait(self):
+            gate.wait(timeout=10)
+            return 0
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        return Process()
+
+    monkeypatch.setattr(webui_service.subprocess, "Popen", popen)
+    service = WebUIService()
+    first = service.import_labeled_dataset(data_root, {"sharp": [incoming]})
+    service.activate_dataset_version(data_root, 1)
+    second = service.import_labeled_dataset(data_root, {"sharp": [later]})
+    assert first["training_job"]["status"] == "running"
+    assert second["training_job"]["status"] == "queued"
+    assert len(commands) == 1
+    versions = service.dataset_version_status(data_root)["versions"]
+    assert versions[1]["training"]["status"] == "running"
+    assert versions[2]["training"]["status"] == "queued"
+
+    service.activate_dataset_version(data_root, 1)
+    gate.set()
+    deadline = time.monotonic() + 5
+    while len(commands) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(commands) == 2
+    database = commands[1][commands[1].index("--database") + 1]
+    assert Path(database) == data_root / "dataset_versions" / "versions" / "v0003" / "annotations.sqlite3"
+    assert Path(second["training_job"]["output"]) == data_root / "runs" / "dataset-v0003"
+
+
+def test_import_reports_when_created_version_cannot_be_queued(tmp_path: Path, monkeypatch) -> None:
+    import webui_service
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    incoming = tmp_path / "first.png"
+    _write_image(incoming)
+    monkeypatch.setattr(webui_service, "load_config", lambda _: _config())
+
+    def fail(_payload):
+        raise ValueError("invalid options")
+
+    monkeypatch.setattr(webui_service, "_validate_training_options", fail)
+    service = WebUIService()
+    with pytest.raises(RuntimeError, match="v0002 已创建.*invalid options"):
+        service.import_labeled_dataset(data_root, {"sharp": [incoming]})
+    assert service.dataset_version_status(data_root)["active_version"] == 2

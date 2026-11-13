@@ -1,7 +1,8 @@
-"""「图片推理」标签页：模型选择与本地图片批量推理。"""
+"""「图片推理」标签页：自动选择模型并批量推理。"""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -16,31 +17,27 @@ def list_models(service: WebUIService) -> list[dict[str, Any]]:
     return service.list_models()["models"]
 
 
-def model_choices(models: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    return [
-        (
-            f'{item["dataset"]} · {item["architecture"]} · {item["modified"]}',
-            item["path"],
-        )
-        for item in models
-    ]
-
-
 def default_model_path(models: list[dict[str, Any]]) -> str | None:
-    return models[0]["path"] if models else None
+    for model in models:
+        if Path(model["path"]).name == "best.pt":
+            return model["path"]
+    return None
 
 
 def describe_model(
     models: list[dict[str, Any]], model_path: str | None
 ) -> str:
     if not model_path:
-        return "未发现已训练模型；请先在「模型训练」页训练，或直接粘贴权重路径。"
+        return "未发现已训练的 best.pt 模型；请先训练模型。"
     for item in models:
         if item["path"] == model_path:
             details = [
                 f"**数据集**：`{item['dataset']}`",
                 f"**架构**：`{item['architecture']}`",
+                f"**权重**：`{item['path']}`",
             ]
+            if item.get("dataset_version"):
+                details.insert(1, f"**数据集版本**：`{item['dataset_version']}`")
             if item.get("modified"):
                 details.append(f"**训练时间**：{item['modified']}")
             if item.get("input_size"):
@@ -51,46 +48,18 @@ def describe_model(
 
 def build_inference_tab(
     service: WebUIService,
-) -> tuple[gr.Dropdown, gr.Markdown]:
+    blocks: gr.Blocks,
+    tab: gr.Tab | None = None,
+) -> gr.Markdown:
     gr.Markdown(
-        "选择模型与本地图片，支持多选批量推理。低于配置置信度阈值时显示「无法确定」。",
+        "每次推理自动使用最新的 best.pt 模型；CUDA 可用时使用 CUDA，否则使用 CPU。"
+        "支持多选批量推理，低于配置置信度阈值时显示「无法确定」。",
         elem_classes=["tab-hint"],
     )
     models = list_models(service)
     initial_model = default_model_path(models)
-    with gr.Row():
-        model_path = gr.Dropdown(
-            label="选择模型（runs 目录下已训练权重，可输入自定义路径）",
-            info=(
-                "推荐使用训练完成的 best.pt。默认推理参数：居中热区 809 × 1080，"
-                "图片最大边长 12000 px，置信度阈值 0.45；模型输入尺寸优先读取权重元数据，"
-                "未记录时默认 224。修改 configs/default.yaml 或模型后，以实际配置和权重元数据为准。"
-            ),
-            choices=model_choices(models),
-            value=initial_model,
-            allow_custom_value=True,
-            scale=4,
-        )
-        describe_api_component(
-            model_path,
-            "已训练的 .pt 分类器权重文件路径。文件必须存在，并包含本项目支持的三类模型权重。",
-            input_info={"type": "string"},
-        )
-        refresh_models_button = gr.Button("刷新模型列表", scale=0, min_width=130)
-        prediction_device = gr.Dropdown(
-            label="设备",
-            choices=["auto", "cuda", "cpu"],
-            value="auto",
-            info="推荐 auto：CUDA 可用时使用 CUDA，否则自动使用 CPU。",
-            scale=1,
-            min_width=110,
-        )
-        describe_api_component(
-            prediction_device,
-            "推理设备：auto、cuda 或 cpu。auto 在 CUDA 可用时选择 CUDA，否则使用 CPU；"
-            "选择 cuda 时要求当前环境支持 CUDA。",
-        )
-    model_info = gr.Markdown(describe_model(models, initial_model))
+    model_info = gr.Markdown(describe_model(models, initial_model), label="自动选择的模型")
+    api_button = gr.Button(visible=False)
     gr.Markdown(
         "上传一张或多张图片；单张图片最大 40 MiB。",
         elem_classes=["tab-hint"],
@@ -166,30 +135,21 @@ def build_inference_tab(
         prediction_results,
         "逐图片推理结果表；概率为未校准的 softmax 百分比，失败时显示错误原因。",
     )
-    def refresh_model_dropdown() -> tuple[Any, str]:
+    def refresh_model_info() -> str:
         models = list_models(service)
-        choices = model_choices(models)
-        value = choices[0][1] if choices else None
-        return (
-            gr.Dropdown(choices=choices, value=value),
-            describe_model(models, value),
+        return describe_model(models, default_model_path(models))
+
+    blocks.load(
+        refresh_model_info,
+        outputs=model_info,
+        api_name=False,
+    )
+    if tab is not None:
+        tab.select(
+            refresh_model_info,
+            outputs=model_info,
+            api_name=False,
         )
-
-    def describe_selected_model(model: str) -> str:
-        return describe_model(list_models(service), model)
-
-    refresh_models_button.click(
-        refresh_model_dropdown,
-        inputs=[],
-        outputs=[model_path, model_info],
-        api_name=False,
-    )
-    model_path.change(
-        describe_selected_model,
-        inputs=[model_path],
-        outputs=[model_info],
-        api_name=False,
-    )
 
     def update_predict_button(files: list[str] | None) -> Any:
         return gr.update(interactive=bool(files))
@@ -265,12 +225,34 @@ def build_inference_tab(
             rows,
         )
 
+    def predict_automatically(files: list[str] | None):
+        if not files:
+            raise gr.Error("请先选择至少一张图片。")
+        models = list_models(service)
+        model = default_model_path(models)
+        if model is None:
+            raise gr.Error("未发现已训练的 best.pt 模型，请先训练模型。")
+        message, previews, rows = predict_images(files, model, "auto")
+        return message, previews, rows, describe_model(models, model)
+
+    def predict_api(
+        files: list[str] | None,
+    ) -> tuple[str, list[tuple[np.ndarray, str]], list[list[Any]]]:
+        message, previews, rows, _ = predict_automatically(files)
+        return message, previews, rows
+
     predict_button.click(
-        predict_images,
-        inputs=[prediction_files, model_path, prediction_device],
+        predict_automatically,
+        inputs=[prediction_files],
+        outputs=[prediction_message, prediction_gallery, prediction_results, model_info],
+        api_name=False,
+    )
+    api_button.click(
+        predict_api,
+        inputs=[prediction_files],
         outputs=[prediction_message, prediction_gallery, prediction_results],
         api_name="predict_images",
-        api_description="对一张或多张图片进行热区裁剪和清晰度三分类。",
+        api_description="自动使用最新 best.pt 和可用设备，对图片进行热区裁剪和清晰度三分类。",
     )
 
-    return model_path, model_info
+    return model_info
