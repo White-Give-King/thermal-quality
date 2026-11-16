@@ -43,7 +43,7 @@ def test_main_exposes_launched_demo_for_gradio_hot_reload(monkeypatch) -> None:
     assert app_entrypoint.demo is launched_demo
     assert create_demo_options == {"enable_training": False, "enable_annotation": False}
     assert launched_demo.launch_kwargs == {
-        "server_name": "127.0.0.1",
+        "server_name": "0.0.0.0",
         "server_port": 7860,
         "show_error": True,
         "css": "test-css",

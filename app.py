@@ -35,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         enable_training=args.enable_training,
     )
     demo.launch(
-        server_name="127.0.0.1",
+        server_name="0.0.0.0",
         server_port=args.port,
         show_error=True,
         css=demo.css,
