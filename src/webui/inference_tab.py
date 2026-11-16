@@ -9,8 +9,10 @@ import gradio as gr
 import numpy as np
 
 from decision import LABELS
+from image_io import load_image_for
+from inference import load_config
 from webui.api_docs import describe_api_component
-from webui_service import WebUIService
+from webui_service import MAX_UPLOAD_BYTES, WebUIService
 
 
 def list_models(service: WebUIService) -> list[dict[str, Any]]:
@@ -97,13 +99,14 @@ def build_inference_tab(
             "推理处理状态和成功获得推理结果的图片数 / 输入图片总数。",
         )
     gr.Markdown(
-        "预览图标注推理类别与最高概率；图库标题显示中文类别及各类别概率。",
+        "上传后预览原图；推理完成后，预览图标注推理类别与最高概率，"
+        "图库标题显示中文类别及各类别概率。",
         elem_classes=["tab-hint"],
     )
     prediction_gallery = gr.Gallery(
         label=(
-            "推理预览图库（图片标注类别和最高概率；标题含中文类别及各类别概率；"
-            "失败图片不展示）"
+            "推理预览图库（上传后显示原图；推理后图片标注类别和最高概率；"
+            "标题含中文类别及各类别概率；推理失败图片不展示）"
         ),
         columns=1,
         object_fit="cover",
@@ -151,13 +154,32 @@ def build_inference_tab(
             api_name=False,
         )
 
-    def update_predict_button(files: list[str] | None) -> Any:
-        return gr.update(interactive=bool(files))
+    def update_uploaded_images(
+        files: list[str] | None,
+    ) -> tuple[Any, list[str | np.ndarray], str, list[list[Any]]]:
+        previews: list[str | np.ndarray] = []
+        config = None
+        for file in files or []:
+            path = Path(file)
+            if path.suffix.lower() not in {".tif", ".tiff"}:
+                previews.append(file)
+                continue
+            try:
+                if path.stat().st_size > MAX_UPLOAD_BYTES:
+                    raise ValueError("图片超过 40 MiB")
+                if config is None:
+                    config = load_config(service.config_path)
+                image = load_image_for(path, config).image
+                previews.append(image[:, :, ::-1].copy())
+            except (OSError, ValueError, RuntimeError) as exc:
+                gr.Warning(f"{path.name} 无法预览：{exc}；仍可尝试推理。")
+                previews.append(file)
+        return gr.update(interactive=bool(files)), previews, "", []
 
     prediction_files.change(
-        update_predict_button,
+        update_uploaded_images,
         inputs=[prediction_files],
-        outputs=[predict_button],
+        outputs=[predict_button, prediction_gallery, prediction_message, prediction_results],
         api_name=False,
     )
 

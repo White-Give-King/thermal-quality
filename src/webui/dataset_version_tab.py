@@ -47,7 +47,10 @@ def _version_display(status: dict[str, Any]) -> tuple[list[tuple[str, int]], str
 
 
 def build_dataset_version_tab(
-    service: WebUIService, data_root: DataRootPanel
+    service: WebUIService,
+    data_root: DataRootPanel,
+    blocks: gr.Blocks,
+    tab: gr.Tab | None = None,
 ) -> None:
     gr.Markdown(
         "`data/` 当前内容作为 v1 基础数据集。按类别分别选择图片后导入，"
@@ -55,14 +58,21 @@ def build_dataset_version_tab(
         "每个版本保留独立标注快照；回档只切换当前生效版本，不删除历史版本。",
         elem_classes=["tab-hint"],
     )
-    refresh_button = gr.Button("刷新版本列表")
-    version_select = gr.Dropdown(
-        label="数据集版本",
-        choices=[],
-        value=None,
-        interactive=True,
-    )
-    version_status = gr.Markdown("点击“刷新版本列表”初始化并查看 `data/` 的基础版本。")
+    with gr.Row(equal_height=True):
+        version_select = gr.Dropdown(
+            label="数据集版本",
+            choices=[],
+            value=None,
+            interactive=True,
+            scale=1,
+        )
+        refresh_button = gr.Button(
+            "刷新版本列表",
+            size="sm",
+            scale=0,
+            min_width=140,
+        )
+    version_status = gr.Markdown("打开此标签页时会自动加载数据集版本。")
     training_detail = gr.Code(label="所选版本训练状态和日志（刷新版本列表更新）", language="shell", lines=8)
     with gr.Row():
         sharp_files = gr.File(
@@ -83,9 +93,20 @@ def build_dataset_version_tab(
             file_types=["image"],
             type="filepath",
         )
-    with gr.Row():
-        import_button = gr.Button("导入并创建新版本", variant="primary")
-        rollback_button = gr.Button("回档到所选版本")
+    with gr.Row(equal_height=True):
+        import_button = gr.Button(
+            "导入并创建新版本",
+            variant="primary",
+            size="lg",
+            scale=0,
+            min_width=220,
+        )
+        rollback_button = gr.Button(
+            "回档到所选版本",
+            size="lg",
+            scale=0,
+            min_width=180,
+        )
 
     def refresh_versions(root: str):
         try:
@@ -189,3 +210,16 @@ def build_dataset_version_tab(
         show_training, inputs=[data_root.root, version_select], outputs=training_detail,
         api_name=False,
     )
+    blocks.load(
+        refresh_versions,
+        inputs=data_root.root,
+        outputs=[version_select, version_status],
+        api_name=False,
+    )
+    if tab is not None:
+        tab.select(
+            refresh_versions,
+            inputs=data_root.root,
+            outputs=[version_select, version_status],
+            api_name=False,
+        )

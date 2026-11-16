@@ -29,8 +29,8 @@ def create_ui(*, enable_annotation: bool = False, enable_training: bool = False)
             if enable_annotation:
                 with gr.Tab("图片标注"):
                     build_annotation_tab(service, data_root, demo)
-            with gr.Tab("数据集版本"):
-                build_dataset_version_tab(service, data_root)
+            with gr.Tab("数据集版本") as dataset_version_tab:
+                build_dataset_version_tab(service, data_root, demo, dataset_version_tab)
             with gr.Tab("图片推理") as inference_tab:
                 model_info = build_inference_tab(service, demo, inference_tab)
             if enable_training:

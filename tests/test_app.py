@@ -187,6 +187,33 @@ def test_model_information_refreshes_on_load_and_inference_tab_selection() -> No
         assert {event for item in callbacks for _, event in item.targets} == {"load", "select"}
 
 
+def test_dataset_versions_refresh_on_load_and_tab_selection() -> None:
+    ui = create_ui()
+    callbacks = [
+        item for item in ui.fns.values()
+        if getattr(item.fn, "__name__", "") == "refresh_versions"
+    ]
+
+    assert {"load", "select"} <= {
+        event for item in callbacks for _, event in item.targets
+    }
+
+
+def test_dataset_version_buttons_have_compact_and_prominent_sizes() -> None:
+    buttons = {
+        item["props"].get("value"): item["props"]
+        for item in demo.config["components"]
+        if item["type"] == "button"
+    }
+
+    assert buttons["刷新版本列表"]["size"] == "sm"
+    assert buttons["刷新版本列表"]["min_width"] == 140
+    assert buttons["导入并创建新版本"]["size"] == "lg"
+    assert buttons["导入并创建新版本"]["min_width"] == 220
+    assert buttons["回档到所选版本"]["size"] == "lg"
+    assert buttons["回档到所选版本"]["min_width"] == 180
+
+
 def test_training_completion_refreshes_automatic_model_info(tmp_path, monkeypatch) -> None:
     run = tmp_path / "data" / "runs" / "dataset-v0002"
     run.mkdir(parents=True)
@@ -220,7 +247,7 @@ def test_inference_gallery_explains_result_annotations() -> None:
 
     assert "类别和最高概率" in gallery["label"]
     assert "各类别概率" in gallery["label"]
-    assert "失败图片不展示" in gallery["label"]
+    assert "推理失败图片不展示" in gallery["label"]
 
 
 def test_prediction_gallery_hover_frame_covers_full_thumbnail() -> None:
@@ -236,22 +263,69 @@ def test_prediction_gallery_hover_frame_covers_full_thumbnail() -> None:
     assert "#prediction-gallery .thumbnail-lg.selected::after" in css
 
 
-def test_inference_button_is_enabled_only_when_images_are_uploaded() -> None:
+def test_upload_previews_images_and_clears_previous_results(tmp_path) -> None:
     button = next(
         item["props"]
         for item in demo.config["components"]
         if item["props"].get("value") == "开始推理"
     )
     callback = next(
-        item.fn
+        item
         for item in demo.fns.values()
-        if item.fn.__name__ == "update_predict_button"
+        if item.fn.__name__ == "update_uploaded_images"
     )
 
     assert button["interactive"] is False
-    assert callback(None)["interactive"] is False
-    assert callback([])["interactive"] is False
-    assert callback(["frame.png"])["interactive"] is True
+    for files in (None, []):
+        button_update, previews, message, rows = callback.fn(files)
+        assert button_update["interactive"] is False
+        assert (previews, message, rows) == ([], "", [])
+
+    files = [str(tmp_path / "first.png"), str(tmp_path / "second.png")]
+    button_update, previews, message, rows = callback.fn(files)
+    assert button_update["interactive"] is True
+    assert previews == files
+    assert (message, rows) == ("", [])
+    gallery = next(component for component in callback.outputs if isinstance(component, gr.Gallery))
+    processed = gallery.postprocess(previews)
+    assert [item.image.path for item in processed.root] == files
+    assert all(item.caption is None for item in processed.root)
+
+
+def test_upload_tiff_is_converted_for_browser_preview(tmp_path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    path = tmp_path / "frame.tiff"
+    Image.new("RGB", (2, 1), (255, 0, 0)).save(path)
+    callback = next(
+        item.fn for item in demo.fns.values()
+        if item.fn.__name__ == "update_uploaded_images"
+    )
+
+    _, previews, _, _ = callback([str(path)])
+
+    assert len(previews) == 1
+    np.testing.assert_array_equal(previews[0], [[[255, 0, 0], [255, 0, 0]]])
+
+
+def test_invalid_tiff_warns_without_blocking_inference(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not an image")
+    warnings = []
+    monkeypatch.setattr(gr, "Warning", warnings.append)
+    callback = next(
+        item.fn for item in demo.fns.values()
+        if item.fn.__name__ == "update_uploaded_images"
+    )
+
+    button, previews, message, rows = callback([str(path)])
+
+    assert button["interactive"] is True
+    assert previews == [str(path)]
+    assert (message, rows) == ("", [])
+    assert len(warnings) == 1
+    assert "broken.tif 无法预览" in warnings[0]
 
 
 def test_inference_results_use_english_labels_and_probability_columns(monkeypatch, tmp_path) -> None:
