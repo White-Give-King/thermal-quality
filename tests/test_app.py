@@ -140,6 +140,7 @@ def test_gradio_page_is_served_and_callbacks_are_registered() -> None:
         "/annotation_status",
         "/claim_next_unlabeled",
         "/dataset_version_status",
+        "/delete_dataset_version",
         "/import_labeled_dataset",
         "/list_models",
         "/navigate_annotation",
@@ -206,12 +207,89 @@ def test_dataset_version_buttons_have_compact_and_prominent_sizes() -> None:
         if item["type"] == "button"
     }
 
-    assert buttons["刷新版本列表"]["size"] == "sm"
-    assert buttons["刷新版本列表"]["min_width"] == 140
-    assert buttons["导入并创建新版本"]["size"] == "lg"
-    assert buttons["导入并创建新版本"]["min_width"] == 220
-    assert buttons["回档到所选版本"]["size"] == "lg"
-    assert buttons["回档到所选版本"]["min_width"] == 180
+    assert buttons["刷新"]["size"] == "md"
+    assert buttons["刷新"]["min_width"] == 115
+    assert buttons["无法删除"]["interactive"] is False
+    assert buttons["导入并创建新版本"]["size"] == "md"
+    assert buttons["导入并创建新版本"]["min_width"] == 180
+    assert buttons["回档到所选版本"]["size"] == "md"
+    assert buttons["回档到所选版本"]["min_width"] == 115
+    assert buttons["无法删除"]["size"] == "md"
+    assert buttons["无法删除"]["min_width"] == 115
+    assert "version-rollback-button" in buttons["回档到所选版本"]["elem_classes"]
+
+
+def test_dataset_version_training_details_are_at_the_bottom() -> None:
+    components = demo.config["components"]
+
+    def component_index(component_type: str, key: str, value: str) -> int:
+        return next(
+            index
+            for index, component in enumerate(components)
+            if component["type"] == component_type
+            and component["props"].get(key) == value
+        )
+
+    training_details = component_index(
+        "code", "label", "所选版本训练状态和日志（刷新版本列表更新）"
+    )
+    assert training_details > component_index("button", "value", "导入并创建新版本")
+    assert training_details > component_index("file", "label", "模糊（defocused）图片")
+
+
+def test_delete_current_version_prompts_and_switches_automatically(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    import cv2
+    import numpy as np
+    import pytest
+    from gradio.state_holder import SessionState
+
+    from dataset_versioning import DatasetVersionStore
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    image = tmp_path / "image.png"
+    assert cv2.imwrite(str(image), np.full((16, 16, 3), 100, dtype=np.uint8))
+    store = DatasetVersionStore(data_root, data_root)
+    store.import_labeled_images(
+        {"sharp": [image]},
+        config={"thermal_roi": {"mode": "centered", "width": 16, "height": 16}},
+        max_upload_bytes=1024 * 1024,
+    )
+    service = webui_service.WebUIService()
+    monkeypatch.setattr("webui.app.WebUIService", lambda: service)
+    ui = create_ui()
+    callbacks = {item.fn.__name__: item.fn for item in ui.fns.values()}
+    events = {item.fn.__name__: item for item in ui.fns.values()}
+
+    _, _, delete_button = callbacks["refresh_versions"](str(data_root))
+    assert delete_button.value == "删除所选版本"
+    assert delete_button.interactive is True
+    delete = callbacks["delete_version"]
+    _, cancelled_message, _, _ = delete(str(data_root), 2, False)
+    assert "已取消删除" in cancelled_message
+    assert store.status()["active_version"] == 2
+
+    delete_event = events["delete_version"]
+    assert "window.confirm" in delete_event.js
+    assert isinstance(delete_event.inputs[2], gr.Checkbox)
+    assert delete_event.inputs[2].visible is False
+
+    session = SessionState(ui)
+    session[events["refresh_versions"].inputs[0]._id] = str(data_root)
+    refreshed = asyncio.run(
+        ui.process_api(events["refresh_versions"], [None], state=session)
+    )
+    assert refreshed["data"][0]["value"] == 2
+    result = asyncio.run(
+        ui.process_api(events["delete_version"], [None, 2, True], state=session)
+    )
+    assert result["data"][0]["value"] == 1
+    assert "自动切换到最近可用版本 v0001" in result["data"][1]
+    assert store.status()["active_version"] == 1
+    assert result["data"][3]["value"] == "无法删除"
+    assert result["data"][3]["interactive"] is False
 
 
 def test_training_completion_refreshes_automatic_model_info(tmp_path, monkeypatch) -> None:
@@ -474,6 +552,7 @@ def test_business_apis_are_named_and_page_events_are_not_published() -> None:
         "/annotation_status",
         "/claim_next_unlabeled",
         "/dataset_version_status",
+        "/delete_dataset_version",
         "/import_labeled_dataset",
         "/list_models",
         "/navigate_annotation",
@@ -510,6 +589,10 @@ def test_business_apis_are_named_and_page_events_are_not_published() -> None:
         "sharp_files",
         "borderline_files",
         "defocused_files",
+    ]
+    delete_parameters = named_endpoints["/delete_dataset_version"]["parameters"]
+    assert [item["parameter_name"] for item in delete_parameters] == [
+        "dataset_root", "version",
     ]
 
 
@@ -562,6 +645,9 @@ def test_all_named_apis_document_parameters_and_responses() -> None:
             "job_id", "status", "output",
         ),
         "/activate_dataset_version": (
+            "active_version", "latest_version", "versions",
+        ),
+        "/delete_dataset_version": (
             "active_version", "latest_version", "versions",
         ),
         "/training_status": (

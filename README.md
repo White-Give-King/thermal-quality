@@ -130,12 +130,12 @@ Windows 下也可以双击项目根目录的 `启动WebUI.bat`，它会调用 `t
 
 - **图片推理**：选择一张或多张图片后，图库先显示原图，不显示推理详情；推理完成后显示标注和分类结果。重新选择图片会清除上一次的结果。页面每次推理都会扫描 `data/` 和旧版 `runs/`，自动使用修改时间最新的 `best.pt` 权重；没有 `best.pt` 时提示先训练。设备自动选择：CUDA 可用时使用 CUDA，否则使用 CPU。页面显示所用模型、分类状态、各类别概率和原图热区预览。推理会先检测热图黑边并裁掉，未检测到有效黑边时使用默认配置热区；多张图片会并发准备热区，并按最多 16 张一批运行模型推理。低于配置的置信度阈值时显示“无法确定”。坏图会单独显示错误，不会被当作模型结果。
 - **图片标注**（需要 `--enable-annotation`）：载入固定的 `data/` 数据集目录，浏览原始图片并标注三类；标注结果写入 `data/annotations.sqlite3`。图片按需读取，多个页面共享未标注队列。
-- **数据集版本**：`data/` 当前内容初始化为 v1；分别上传清晰、临界、模糊类别图片，一次提交按当前热区配置裁剪图片、合并新增标注并创建新版本。版本快照和共享图片保存在 `data/dataset_versions/`。回档仅切换当前生效版本，不删除历史版本；之后导入仍继续递增版本号。
+- **数据集版本**：`data/` 当前内容初始化为 v1；分别上传清晰、临界、模糊类别图片，一次提交按当前热区配置裁剪图片、合并新增标注并创建新版本。版本快照和共享图片保存在 `data/dataset_versions/`。回档仅切换当前生效版本；删除版本时会弹出确认提示，删除当前生效版本时自动切换到其余版本中版本号最近且文件可用的版本。删除同时清除对应的 `data/runs/dataset-vNNNN/` 训练产物；训练中、排队中或仅剩的可用版本不可删除。删除版本不会清除共享图片资产，版本号也不会复用。
 - **模型训练**（需要 `--enable-training`）：始终读取 `data/` 当前生效版本，模型输出到 `data/runs/dataset-vNNNN/`。可选择模型架构（MobileNetV3-Small/Large、EfficientNet-B0、ResNet18）、epoch、batch size、输入尺寸、学习率和设备。训练以本机后台任务运行，可查看状态和日志；回档数据集不会自动切换推理模型。即使未启用此页面，提交新数据集版本仍会自动排队训练。
 - WebUI 标注数据库和模型均保存在 `data/` 下；训练数据来自当前生效的数据集版本。数据库必须包含三类足够样本；否则训练脚本会给出失败日志。
 - “下载预训练权重”默认开启，首次下载需要网络；取消勾选则从随机初始化开始。Gradio 界面单次只运行一个训练任务。
 
-除页面内部同步事件外，Gradio API 文档还提供具名业务接口：`/upload_images`、`/predict_images`、`/list_models`；数据集版本的 `/dataset_version_status`、`/import_labeled_dataset`、`/activate_dataset_version`；以及查询自动训练任务的 `/training_status`。使用 `--enable-training` 时另外提供手动训练接口 `/start_training`。使用 `--enable-annotation` 时另外提供标注接口 `/start_annotation`、`/annotation_status`、`/navigate_annotation`、`/claim_next_unlabeled`、`/save_annotation`、`/update_annotation_roi`，标注接口通过会话 ID 关联操作，图片序号从 1 开始；导入接口按类别分别接收图片文件；训练启动接口返回任务 ID，再用状态接口轮询进度。`/predict_images` 只接收图片列表，和页面一样自动选用修改时间最新的 `best.pt` 及可用设备。**接口变更**：此前传入 `model` 和 `device` 的调用方需要移除这两个参数；返回的状态、图库和结果表格式不变。
+除页面内部同步事件外，Gradio API 文档还提供具名业务接口：`/upload_images`、`/predict_images`、`/list_models`；数据集版本的 `/dataset_version_status`、`/import_labeled_dataset`、`/activate_dataset_version`、`/delete_dataset_version`；以及查询自动训练任务的 `/training_status`。使用 `--enable-training` 时另外提供手动训练接口 `/start_training`。使用 `--enable-annotation` 时另外提供标注接口 `/start_annotation`、`/annotation_status`、`/navigate_annotation`、`/claim_next_unlabeled`、`/save_annotation`、`/update_annotation_roi`，标注接口通过会话 ID 关联操作，图片序号从 1 开始；导入接口按类别分别接收图片文件；训练启动接口返回任务 ID，再用状态接口轮询进度。`/delete_dataset_version` 删除当前生效版本时自动切换到最近可用版本；不允许删除仍在训练、排队的版本，并会同时删除对应训练产物。`/predict_images` 只接收图片列表，和页面一样自动选用修改时间最新的 `best.pt` 及可用设备。**接口变更**：此前传入 `model` 和 `device` 的调用方需要移除这两个参数；返回的状态、图库和结果表格式不变。
 
 通过 `gradio_client` 调用时，使用 `Client("http://127.0.0.1:7860")`，并按 API 文档中的示例传递参数和 `api_name`。服务只绑定本机回环地址，不向局域网或公网开放；界面和 API 均允许启动本机训练进程并读取用户指定路径的文件。命令行 `scripts/predict.py` 与训练脚本仍可独立使用。
 

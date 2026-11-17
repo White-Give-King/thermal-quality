@@ -66,6 +66,84 @@ def test_import_creates_immutable_incrementing_versions_and_rolls_back(tmp_path:
     assert (output / "dataset_versions" / "versions" / "v0002" / "annotations.sqlite3").is_file()
 
 
+def test_delete_removes_non_active_snapshot_without_reusing_version_numbers(
+    tmp_path: Path,
+) -> None:
+    store, _ = _store(tmp_path)
+    first_image = tmp_path / "first.png"
+    second_image = tmp_path / "second.png"
+    third_image = tmp_path / "third.png"
+    for image, value in zip(
+        (first_image, second_image, third_image), (10, 20, 30)
+    ):
+        _write_image(image, value)
+
+    store.import_labeled_images(
+        {"sharp": [first_image]}, config=_config(), max_upload_bytes=1024 * 1024
+    )
+    store.import_labeled_images(
+        {"borderline": [second_image]}, config=_config(), max_upload_bytes=1024 * 1024
+    )
+
+    result = store.delete(2)
+
+    assert result["active_version"] == 3
+    assert result["latest_version"] == 3
+    assert [record["version"] for record in result["versions"]] == [1, 3]
+    assert not store._version_dir(store.versions_dir, 2).exists()
+    assert any((store.assets_dir / "images").iterdir())
+
+    next_status = store.import_labeled_images(
+        {"defocused": [third_image]}, config=_config(), max_upload_bytes=1024 * 1024
+    )
+    assert next_status["active_version"] == 4
+
+
+def test_delete_active_version_switches_to_latest_usable_version_atomically(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, _ = _store(tmp_path)
+    image = tmp_path / "image.png"
+    _write_image(image)
+    store.import_labeled_images(
+        {"sharp": [image]}, config=_config(), max_upload_bytes=1024 * 1024
+    )
+    active_dir = store._version_dir(store.versions_dir, 2)
+
+    with monkeypatch.context() as patch:
+        def fail_write(_manifest):
+            raise OSError("manifest write failed")
+
+        patch.setattr(store, "_write_manifest", fail_write)
+        with pytest.raises(OSError, match="manifest write failed"):
+            store.delete(2)
+    assert store.status()["active_version"] == 2
+    assert active_dir.is_dir()
+
+    result = store.delete(2)
+    assert result["active_version"] == 1
+    assert [record["version"] for record in result["versions"]] == [1]
+    assert not active_dir.exists()
+    with pytest.raises(ValueError):
+        store.delete(1)
+
+
+def test_delete_active_version_skips_unusable_newer_versions(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    images = [tmp_path / f"image-{index}.png" for index in range(2)]
+    for index, image in enumerate(images):
+        _write_image(image, 20 + index * 30)
+        store.import_labeled_images(
+            {"sharp": [image]}, config=_config(), max_upload_bytes=1024 * 1024
+        )
+    store._version_dir(store.versions_dir, 2).joinpath("annotations.sqlite3").unlink()
+
+    status = store.delete(3)
+
+    assert status["active_version"] == 1
+    assert [record["version"] for record in status["versions"]] == [1, 2]
+
+
 def test_first_import_preserves_existing_labeled_baseline(tmp_path: Path) -> None:
     store, output = _store(tmp_path)
     crop = output / "images" / "existing.png"
@@ -295,3 +373,90 @@ def test_import_reports_when_created_version_cannot_be_queued(tmp_path: Path, mo
     with pytest.raises(RuntimeError, match="v0002 已创建.*invalid options"):
         service.import_labeled_dataset(data_root, {"sharp": [incoming]})
     assert service.dataset_version_status(data_root)["active_version"] == 2
+
+
+def test_service_deletes_version_and_training_output_but_rejects_busy_version(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import webui_service
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    _write_image(first, 10)
+    _write_image(second, 20)
+    monkeypatch.setattr(webui_service, "load_config", lambda _: _config())
+    service = WebUIService()
+    monkeypatch.setattr(
+        service.jobs,
+        "start",
+        lambda options, **kwargs: {
+            "job_id": "test",
+            "status": "completed",
+            "output": options["output"],
+        },
+    )
+    service.import_labeled_dataset(data_root, {"sharp": [first]})
+    service.import_labeled_dataset(data_root, {"borderline": [second]})
+    service.activate_dataset_version(data_root, 1)
+
+    monkeypatch.setattr(
+        service.jobs,
+        "latest_for_output",
+        lambda _: {"job_id": "queued", "status": "queued", "return_code": None},
+    )
+    with pytest.raises(RuntimeError, match="training job is queued"):
+        service.delete_dataset_version(data_root, 3)
+    assert not (data_root / "runs" / "dataset-v0003").exists()
+
+    output = data_root / "runs" / "dataset-v0002"
+    output.mkdir(parents=True)
+    (output / "best.pt").write_bytes(b"weights")
+    monkeypatch.setattr(
+        service.jobs,
+        "latest_for_output",
+        lambda _: {"job_id": "test", "status": "running", "return_code": None},
+    )
+    with pytest.raises(RuntimeError, match="training job is running"):
+        service.delete_dataset_version(data_root, 2)
+    assert output.is_dir()
+
+    monkeypatch.setattr(
+        service.jobs,
+        "latest_for_output",
+        lambda _: {"job_id": "test", "status": "completed", "return_code": 0},
+    )
+    result = service.delete_dataset_version(data_root, 2)
+
+    assert [record["version"] for record in result["versions"]] == [1, 3]
+    assert not (data_root / "dataset_versions" / "versions" / "v0002").exists()
+    assert not output.exists()
+
+
+def test_service_deletes_active_version_only_after_its_training_finishes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, data_root = _store(tmp_path)
+    image = tmp_path / "image.png"
+    _write_image(image)
+    store.import_labeled_images(
+        {"sharp": [image]}, config=_config(), max_upload_bytes=1024 * 1024
+    )
+    output = data_root / "runs" / "dataset-v0002"
+    output.mkdir(parents=True)
+    (output / "best.pt").write_bytes(b"weights")
+    service = WebUIService()
+    monkeypatch.setattr(
+        service.jobs, "latest_for_output",
+        lambda _: {"job_id": "test", "status": "running", "return_code": None},
+    )
+    with pytest.raises(RuntimeError, match="training job is running"):
+        service.delete_dataset_version(data_root, 2)
+    assert store.status()["active_version"] == 2
+    assert output.is_dir()
+
+    monkeypatch.setattr(service.jobs, "latest_for_output", lambda _: None)
+    result = service.delete_dataset_version(data_root, 2)
+    assert result["active_version"] == 1
+    assert not output.exists()

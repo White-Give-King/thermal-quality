@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -614,6 +615,45 @@ class WebUIService:
         with self._dataset_version_lock:
             self._dataset_version_store(dataset_root).activate(version)
             return self.dataset_version_status(dataset_root)
+
+    def delete_dataset_version(
+        self,
+        dataset_root: str | Path,
+        version: int,
+    ) -> dict[str, Any]:
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError("dataset version must be an integer")
+        with self._dataset_version_lock:
+            root = Path(dataset_root).expanduser().resolve()
+            store = self._dataset_version_store(root)
+            runs_root = root / "runs"
+            if runs_root.is_symlink():
+                raise ValueError(
+                    f"training output directory must not be a symbolic link: {runs_root}"
+                )
+            output = runs_root / f"dataset-v{version:04d}"
+            job = self.jobs.latest_for_output(output)
+            if job and job["status"] in {"queued", "running"}:
+                raise RuntimeError(
+                    f"cannot delete dataset version {version} while its training job "
+                    f"is {job['status']}"
+                )
+            if output.is_symlink():
+                raise ValueError(f"training output must not be a symbolic link: {output}")
+            if output.exists():
+                if not output.is_dir() or output.parent.resolve() != runs_root.resolve():
+                    raise ValueError(f"invalid training output directory: {output}")
+
+            store.delete(version)
+            if output.is_dir():
+                try:
+                    shutil.rmtree(output)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"dataset version {version} was removed, but its training "
+                        f"output could not be fully deleted: {exc}"
+                    ) from exc
+            return self.dataset_version_status(root)
 
     def list_workspaces(self, root_dir: str | Path) -> dict[str, Any]:
         root_text = str(root_dir).strip()

@@ -62,6 +62,19 @@ _CSS = """
     line-height: 1.6;
     opacity: 0.7;
 }
+.version-rollback-button:not(:disabled) {
+    background-color: #2563eb !important;
+    border-color: #2563eb !important;
+    color: #fff !important;
+}
+.version-rollback-button:not(:disabled):hover {
+    background-color: #1d4ed8 !important;
+    border-color: #1d4ed8 !important;
+}
+.version-rollback-button:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+}
 /* Gallery thumbnails: remove Gradio's default square (1:1) aspect ratio
    so cells grow to the natural portrait ratio of thermal-panel images. */
 .fixed-height {

@@ -193,6 +193,12 @@ def register_public_apis(
         """Activate an existing dataset version without deleting history."""
         return service.activate_dataset_version(dataset_root, version)
 
+    def delete_dataset_version(
+        dataset_root: str, version: int
+    ) -> DatasetVersionStatus:
+        """Delete a dataset version and its training output."""
+        return service.delete_dataset_version(dataset_root, version)
+
     def start_annotation(
         workspace_root: str, workspace_name: str | None = None
     ) -> AnnotationStartResponse:
@@ -341,6 +347,19 @@ def register_public_apis(
         output_description=(
             "active_version：切换后的当前版本号；latest_version：最新版本号；"
             "versions：全部版本记录数组，字段定义与 /dataset_version_status 相同。"
+        ),
+    )
+    _register_api(
+        delete_dataset_version,
+        "delete_dataset_version",
+        "删除数据集版本及其训练产物；删除当前版本时自动切换到最近可用版本。",
+        input_descriptions=(
+            "dataset_root：服务端已存在的数据集根目录绝对路径；WebUI 默认使用项目的 data 目录。",
+            "version：要删除的已存在版本号，整数。训练中或排队中的版本不可删除。",
+        ),
+        output_description=(
+            "删除后的数据集版本状态；active_version、latest_version 和 versions 字段定义"
+            "与 /dataset_version_status 相同。共享图片资产不会删除。"
         ),
     )
     _register_api(

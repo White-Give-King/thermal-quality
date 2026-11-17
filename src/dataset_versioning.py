@@ -1,4 +1,4 @@
-"""Immutable, append-only snapshots for labeled image datasets."""
+"""Manage immutable snapshots and shared assets for labeled image datasets."""
 
 from __future__ import annotations
 
@@ -222,6 +222,76 @@ class DatasetVersionStore:
         self._version_record(manifest, version)
         manifest["active_version"] = version
         self._write_manifest(manifest)
+        return self.status()
+
+    def delete(self, version: int) -> dict[str, Any]:
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError("dataset version must be an integer")
+        manifest = self.ensure_initialized()
+        self._version_record(manifest, version)
+        if int(manifest["active_version"]) == version:
+            records = manifest["versions"]
+            candidates = sorted(
+                (
+                    int(record["version"])
+                    for record in records
+                    if isinstance(record, dict)
+                    and isinstance(record.get("version"), int)
+                    and not isinstance(record.get("version"), bool)
+                    and record["version"] != version
+                ),
+                reverse=True,
+            )
+            replacement = None
+            for candidate in candidates:
+                candidate_dir = self._version_dir(self.versions_dir, candidate)
+                candidate_database = candidate_dir / ROI_DATABASE_FILENAME
+                if (
+                    candidate_dir.is_dir()
+                    and not candidate_dir.is_symlink()
+                    and candidate_database.is_file()
+                    and not candidate_database.is_symlink()
+                ):
+                    replacement = candidate
+                    break
+            if replacement is None:
+                raise ValueError(
+                    "cannot delete the active dataset version because no other usable version exists"
+                )
+            manifest["active_version"] = replacement
+
+        version_dir = self._version_dir(self.versions_dir, version)
+        if version_dir.is_symlink() or not version_dir.is_dir():
+            raise FileNotFoundError(
+                f"dataset version directory does not exist: {version_dir}"
+            )
+        temporary_dir = self.versions_dir / (
+            f".{version_dir.name}-{uuid.uuid4().hex}.deleting"
+        )
+        os.replace(version_dir, temporary_dir)
+        manifest["versions"] = [
+            record
+            for record in manifest["versions"]
+            if not isinstance(record, dict) or record.get("version") != version
+        ]
+        try:
+            self._write_manifest(manifest)
+        except OSError:
+            try:
+                os.replace(temporary_dir, version_dir)
+            except OSError as rollback_error:
+                raise RuntimeError(
+                    f"could not restore dataset version directory: {version_dir}"
+                ) from rollback_error
+            raise
+
+        try:
+            shutil.rmtree(temporary_dir)
+        except OSError as exc:
+            raise RuntimeError(
+                f"dataset version {version} was removed from history, "
+                f"but its files could not be fully deleted: {exc}"
+            ) from exc
         return self.status()
 
     def import_labeled_images(

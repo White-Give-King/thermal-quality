@@ -46,6 +46,14 @@ def _version_display(status: dict[str, Any]) -> tuple[list[tuple[str, int]], str
     )
 
 
+def _delete_button_update(status: dict[str, Any]) -> gr.Button:
+    can_delete = len(status["versions"]) > 1
+    return gr.Button(
+        value="删除所选版本" if can_delete else "无法删除",
+        interactive=can_delete,
+    )
+
+
 def build_dataset_version_tab(
     service: WebUIService,
     data_root: DataRootPanel,
@@ -53,12 +61,10 @@ def build_dataset_version_tab(
     tab: gr.Tab | None = None,
 ) -> None:
     gr.Markdown(
-        "`data/` 当前内容作为 v1 基础数据集。按类别分别选择图片后导入，"
-        "每次提交都会基于当前版本创建新版本并自动排队训练；同时只运行一个训练任务。"
-        "每个版本保留独立标注快照；回档只切换当前生效版本，不删除历史版本。",
+        "`data/` 初始化为 v1。导入图片创建并训练新版本；回档切换生效版本，删除版本会移除对应快照和训练产物，共享图片保留。",
         elem_classes=["tab-hint"],
     )
-    with gr.Row(equal_height=True):
+    with gr.Row():
         version_select = gr.Dropdown(
             label="数据集版本",
             choices=[],
@@ -66,14 +72,32 @@ def build_dataset_version_tab(
             interactive=True,
             scale=1,
         )
-        refresh_button = gr.Button(
-            "刷新版本列表",
-            size="sm",
-            scale=0,
-            min_width=140,
-        )
+        with gr.Column(scale=1, min_width=260):
+            with gr.Row():
+                refresh_button = gr.Button(
+                    "刷新",
+                    variant="secondary",
+                    size="md",
+                    scale=1,
+                    min_width=115,
+                )
+            with gr.Row():
+                rollback_button = gr.Button(
+                    "回档到所选版本",
+                    elem_classes=["version-rollback-button"],
+                    size="md",
+                    scale=1,
+                    min_width=115,
+                )
+                delete_button = gr.Button(
+                    "无法删除",
+                    variant="stop",
+                    size="md",
+                    scale=1,
+                    min_width=115,
+                    interactive=False,
+                )
     version_status = gr.Markdown("打开此标签页时会自动加载数据集版本。")
-    training_detail = gr.Code(label="所选版本训练状态和日志（刷新版本列表更新）", language="shell", lines=8)
     with gr.Row():
         sharp_files = gr.File(
             label="清晰（sharp）图片",
@@ -97,16 +121,16 @@ def build_dataset_version_tab(
         import_button = gr.Button(
             "导入并创建新版本",
             variant="primary",
-            size="lg",
-            scale=0,
-            min_width=220,
-        )
-        rollback_button = gr.Button(
-            "回档到所选版本",
-            size="lg",
+            size="md",
             scale=0,
             min_width=180,
         )
+    delete_confirmed = gr.Checkbox(value=False, visible=False)
+    training_detail = gr.Code(
+        label="所选版本训练状态和日志（刷新版本列表更新）",
+        language="shell",
+        lines=8,
+    )
 
     def refresh_versions(root: str):
         try:
@@ -114,7 +138,11 @@ def build_dataset_version_tab(
         except (OSError, ValueError, RuntimeError) as exc:
             raise gr.Error(f"读取数据集版本失败：{exc}") from exc
         choices, message = _version_display(status)
-        return gr.Dropdown(choices=choices, value=status["active_version"]), message
+        return (
+            gr.Dropdown(choices=choices, value=status["active_version"]),
+            message,
+            _delete_button_update(status),
+        )
 
     def import_dataset(root: str, sharp: Any, borderline: Any, defocused: Any):
         files_by_label = {
@@ -139,9 +167,10 @@ def build_dataset_version_tab(
             None,
             None,
             None,
+            _delete_button_update(status),
         )
 
-    def rollback(root: str, version: int | float | None) -> tuple[Any, str]:
+    def rollback(root: str, version: int | float | None) -> tuple[Any, str, Any]:
         if version is None or isinstance(version, bool) or int(version) != version:
             raise gr.Error("请选择要回档的数据集版本。")
         try:
@@ -152,6 +181,44 @@ def build_dataset_version_tab(
         return (
             gr.Dropdown(choices=choices, value=status["active_version"]),
             f"已回档。{message}",
+            _delete_button_update(status),
+        )
+
+    def delete_version(
+        root: str,
+        version: int | float | None,
+        confirmed: bool,
+    ) -> tuple[Any, str, str, Any]:
+        if version is None or isinstance(version, bool) or int(version) != version:
+            raise gr.Error("请选择要删除的数据集版本。")
+        try:
+            current = service.dataset_version_status(root)
+            if not confirmed:
+                choices, message = _version_display(current)
+                return (
+                    gr.Dropdown(choices=choices, value=int(version)),
+                    f"已取消删除。{message}",
+                    "删除已取消。",
+                    _delete_button_update(current),
+                )
+            if version == current["active_version"]:
+                deleting_active = True
+            else:
+                deleting_active = False
+            status = service.delete_dataset_version(root, int(version))
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise gr.Error(f"删除数据集版本失败：{exc}") from exc
+        choices, message = _version_display(status)
+        switched = (
+            f"，并自动切换到最近可用版本 v{status['active_version']:04d}"
+            if deleting_active
+            else ""
+        )
+        return (
+            gr.Dropdown(choices=choices, value=status["active_version"]),
+            f"已删除 v{int(version):04d} 及其训练产物{switched}。{message}",
+            "请选择数据集版本。",
+            _delete_button_update(status),
         )
 
     def show_training(root: str, version: int | float | None) -> str:
@@ -176,7 +243,7 @@ def build_dataset_version_tab(
     refresh_button.click(
         refresh_versions,
         inputs=data_root.root,
-        outputs=[version_select, version_status],
+        outputs=[version_select, version_status, delete_button],
         api_name=False,
     )
     import_button.click(
@@ -194,13 +261,30 @@ def build_dataset_version_tab(
             sharp_files,
             borderline_files,
             defocused_files,
+            delete_button,
         ],
     )
     rollback_button.click(
         rollback,
         inputs=[data_root.root, version_select],
-        outputs=[version_select, version_status],
+        outputs=[version_select, version_status, delete_button],
         api_name=False,
+    )
+    delete_button.click(
+        delete_version,
+        inputs=[data_root.root, version_select, delete_confirmed],
+        outputs=[version_select, version_status, training_detail, delete_button],
+        api_name=False,
+        js=(
+            "(root, version, _confirmed) => { "
+            "if (version === null || version === undefined) "
+            "return [root, version, false]; "
+            "const confirmed = window.confirm("
+            "`确定永久删除数据集版本 v${String(version).padStart(4, '0')} "
+            "及其训练产物吗？如果它是当前版本，将自动切换到最近可用版本。"
+            "共享图片不会删除。此操作不可撤销。`); "
+            "return [root, version, confirmed]; }"
+        ),
     )
     version_select.change(
         show_training, inputs=[data_root.root, version_select], outputs=training_detail,
@@ -213,13 +297,13 @@ def build_dataset_version_tab(
     blocks.load(
         refresh_versions,
         inputs=data_root.root,
-        outputs=[version_select, version_status],
+        outputs=[version_select, version_status, delete_button],
         api_name=False,
     )
     if tab is not None:
         tab.select(
             refresh_versions,
             inputs=data_root.root,
-            outputs=[version_select, version_status],
+            outputs=[version_select, version_status, delete_button],
             api_name=False,
         )
